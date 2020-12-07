@@ -4499,13 +4499,17 @@ dependencies = [
  "frame-benchmarking",
  "frame-support",
  "frame-system",
+ "num-traits",
+ "pallet-sudo",
  "pallet-transaction-payment",
  "parity-scale-codec",
  "serde",
  "sp-core",
  "sp-io",
+ "sp-keyring",
  "sp-runtime",
  "sp-std",
+ "substrate-test-runner",
 ]
 
 [[package]]

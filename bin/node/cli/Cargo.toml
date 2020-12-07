@@ -81,7 +81,7 @@ pallet-indices = { version = "2.0.0", path = "../../../frame/indices" }
 pallet-timestamp = { version = "2.0.0", default-features = false, path = "../../../frame/timestamp" }
 pallet-contracts = { version = "2.0.0", path = "../../../frame/contracts" }
 frame-system = { version = "2.0.0", path = "../../../frame/system" }
-pallet-balances = { version = "2.0.0", path = "../../../frame/balances" }
+pallet-balances = { version = "2.0.0", path = "../../../frame/balances", features = ["tests"] }
 pallet-transaction-payment = { version = "2.0.0", path = "../../../frame/transaction-payment" }
 frame-support = { version = "2.0.0", default-features = false, path = "../../../frame/support" }
 pallet-im-online = { version = "2.0.0", default-features = false, path = "../../../frame/im-online" }

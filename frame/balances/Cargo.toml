@@ -20,6 +20,10 @@ sp-runtime = { version = "2.0.0", default-features = false, path = "../../primit
 frame-benchmarking = { version = "2.0.0", default-features = false, path = "../benchmarking", optional = true }
 frame-support = { version = "2.0.0", default-features = false, path = "../support" }
 frame-system = { version = "2.0.0", default-features = false, path = "../system" }
+pallet-sudo = { version = "2.0.0", path = "../../frame/sudo", optional = true }
+sp-keyring = { version = "2.0.0", path = "../../primitives/keyring", optional = true }
+substrate-test-runner = { version = "0.8.0", path = "../../test-utils/substrate-test-runner", optional = true }
+num-traits = { version = "0.2.14", optional = true }
 
 [dev-dependencies]
 sp-io = { version = "2.0.0", path = "../../primitives/io" }
@@ -36,5 +40,11 @@ std = [
 	"frame-benchmarking/std",
 	"frame-support/std",
 	"frame-system/std",
+]
+tests = [
+	"pallet-sudo",
+	"sp-keyring",
+	"substrate-test-runner",
+	"num-traits"
 ]
 runtime-benchmarks = ["frame-benchmarking"]
