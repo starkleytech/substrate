@@ -125,6 +125,7 @@ use frame_support::{
 		extract_actual_weight,
 	},
 	dispatch::DispatchResultWithPostInfo,
+	scale_info,
 };
 use codec::{Encode, Decode, FullCodec, EncodeLike};
 
@@ -198,7 +199,7 @@ pub trait Config: 'static + Eq + Clone {
 
 	/// The user account identifier type for the runtime.
 	type AccountId: Parameter + Member + MaybeSerializeDeserialize + Debug + MaybeDisplay + Ord
-		+ Default;
+		+ Default + scale_info::TypeInfo + 'static;
 
 	/// Converting trait to take a source type and convert to `AccountId`.
 	///
