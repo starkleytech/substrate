@@ -338,11 +338,18 @@ fn decl_runtime_metadata<'a>(
 				// Note: impl_runtime_metadata can be given all parts, no need to filter out any part
 				#module::#pallet_or_module #instance as #name { index #index } with #(#parts)*,
 			)
-		});
+		})
+		.collect::<Vec<_>>();
+	let modules_tokens_vnext = modules_tokens.clone();
 	quote!(
 		#scrate::impl_runtime_metadata!{
 			for #runtime with modules where Extrinsic = #extrinsic
 				#(#modules_tokens)*
+		}
+
+		#scrate::impl_runtime_metadata_vnext!{
+			for #runtime with modules where Extrinsic = #extrinsic
+				#(#modules_tokens_vnext)*
 		}
 	)
 }
