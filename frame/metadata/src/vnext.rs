@@ -41,7 +41,7 @@ use scale_info::{
 	TypeInfo,
 };
 
-pub type RuntimeMetadataLastVersion<T> = RuntimeMetadataV11<T>;
+pub type RuntimeMetadataLastVersion<T> = RuntimeMetadataV12<T>;
 
 /// Metadata prefixed by a u32 for reserved usage
 #[derive(Eq, Encode, PartialEq, RuntimeDebug)]
@@ -50,7 +50,7 @@ pub struct RuntimeMetadataPrefixed<T: Form = MetaForm>(pub u32, pub RuntimeMetad
 
 impl From<RuntimeMetadataLastVersion<CompactForm>> for RuntimeMetadataPrefixed<CompactForm> {
 	fn from(metadata: RuntimeMetadataLastVersion<CompactForm>) -> RuntimeMetadataPrefixed<CompactForm> {
-		RuntimeMetadataPrefixed(super::META_RESERVED, RuntimeMetadata::V11(metadata))
+		RuntimeMetadataPrefixed(super::META_RESERVED, RuntimeMetadata::V12(metadata))
 	}
 }
 
@@ -67,24 +67,24 @@ impl From<RuntimeMetadataPrefixed<CompactForm>> for sp_core::OpaqueMetadata {
 #[cfg_attr(feature = "std", derive(Decode))]
 pub enum RuntimeMetadata<T: Form = MetaForm> {
 	/// Version 11 for runtime metadata.
-	V11(RuntimeMetadataV11<T>),
+	V12(RuntimeMetadataV12<T>),
 }
 
 /// The metadata of a runtime.
 #[derive(Clone, PartialEq, Eq, Encode, RuntimeDebug)]
 #[cfg_attr(feature = "std", derive(Decode))]
-pub struct RuntimeMetadataV11<T: Form = MetaForm> {
+pub struct RuntimeMetadataV12<T: Form = MetaForm> {
 	/// Metadata of all the modules.
 	pub modules: Vec<ModuleMetadata<T>>,
 	// /// Metadata of the extrinsic.
 	// pub extrinsic: ExtrinsicMetadata<F>,
 }
 
-impl IntoCompact for RuntimeMetadataV11 {
-	type Output = RuntimeMetadataV11<CompactForm>;
+impl IntoCompact for RuntimeMetadataV12 {
+	type Output = RuntimeMetadataV12<CompactForm>;
 
 	fn into_compact(self, registry: &mut Registry) -> Self::Output {
-		RuntimeMetadataV11 {
+		RuntimeMetadataV12 {
 			modules: registry.map_into_compact(self.modules),
 			// extrinsic: self.extrinsic.into_compact(registry),
 		}
