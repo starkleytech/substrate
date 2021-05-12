@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,13 +18,14 @@
 //! Storage map type. Implements StorageDoubleMap, StorageIterableDoubleMap,
 //! StoragePrefixedDoubleMap traits and their methods directly.
 
-use codec::{FullCodec, Decode, EncodeLike, Encode};
+use codec::{Decode, Encode, EncodeLike, FullCodec};
 use crate::{
 	storage::{
 		StorageAppend, StorageDecodeLength,
+		bounded_vec::BoundedVec,
 		types::{OptionQuery, QueryKindTrait, OnEmptyGetter},
 	},
-	traits::{GetDefault, StorageInstance},
+	traits::{GetDefault, StorageInstance, Get},
 };
 use frame_metadata::{DefaultByteGetter, StorageEntryModifier};
 use sp_std::vec::Vec;
@@ -99,6 +100,50 @@ where
 	}
 	fn storage_prefix() -> &'static [u8] {
 		<Self as crate::storage::generator::StorageDoubleMap<Key1, Key2, Value>>::storage_prefix()
+	}
+}
+
+impl<Prefix, Hasher1, Key1, Hasher2, Key2, QueryKind, OnEmpty, VecValue, VecBound>
+	StorageDoubleMap<
+		Prefix,
+		Hasher1,
+		Key1,
+		Hasher2,
+		Key2,
+		BoundedVec<VecValue, VecBound>,
+		QueryKind,
+		OnEmpty,
+	> where
+	Prefix: StorageInstance,
+	Hasher1: crate::hash::StorageHasher,
+	Hasher2: crate::hash::StorageHasher,
+	Key1: FullCodec,
+	Key2: FullCodec,
+	QueryKind: QueryKindTrait<BoundedVec<VecValue, VecBound>, OnEmpty>,
+	OnEmpty: crate::traits::Get<QueryKind::Query> + 'static,
+	VecValue: FullCodec,
+	VecBound: Get<u32>,
+{
+	/// Try and append the given item to the double map in the storage.
+	///
+	/// Is only available if `Value` of the map is [`BoundedVec`].
+	pub fn try_append<EncodeLikeItem, EncodeLikeKey1, EncodeLikeKey2>(
+		key1: EncodeLikeKey1,
+		key2: EncodeLikeKey2,
+		item: EncodeLikeItem,
+	) -> Result<(), ()>
+	where
+		EncodeLikeKey1: EncodeLike<Key1> + Clone,
+		EncodeLikeKey2: EncodeLike<Key2> + Clone,
+		EncodeLikeItem: EncodeLike<VecValue>,
+	{
+		<
+			Self
+			as
+			crate::storage::bounded_vec::TryAppendDoubleMap<Key1, Key2, VecValue, VecBound>
+		>::try_append(
+			key1, key2, item,
+		)
 	}
 }
 
@@ -326,7 +371,7 @@ where
 	/// # Usage
 	///
 	/// This would typically be called inside the module implementation of on_runtime_upgrade.
-	pub fn translate_values<OldValue: Decode, F: Fn(OldValue) -> Option<Value>>(f: F) {
+	pub fn translate_values<OldValue: Decode, F: FnMut(OldValue) -> Option<Value>>(f: F) {
 		<Self as crate::storage::StoragePrefixedMap<Value>>::translate_values(f)
 	}
 }
@@ -379,7 +424,7 @@ where
 	/// By returning `None` from `f` for an element, you'll remove it from the map.
 	///
 	/// NOTE: If a value fail to decode because storage is corrupted then it is skipped.
-	pub fn translate<O: Decode, F: Fn(Key1, Key2, O) -> Option<Value>>(f: F) {
+	pub fn translate<O: Decode, F: FnMut(Key1, Key2, O) -> Option<Value>>(f: F) {
 		<Self as crate::storage::IterableStorageDoubleMap<Key1, Key2, Value>>::translate(f)
 	}
 }

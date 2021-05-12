@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2020-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,7 +29,7 @@ use sc_keystore::LocalKeystore;
 use sc_service::config::{KeystoreConfig, BasePath};
 
 /// The `insert` command
-#[derive(Debug, StructOpt)]
+#[derive(Debug, StructOpt, Clone)]
 #[structopt(
 	name = "insert",
 	about = "Insert a key to the keystore of a node."
@@ -123,7 +123,7 @@ mod tests {
 		}
 
 		fn copyright_start_year() -> i32 {
-			2020
+			2021
 		}
 
 		fn author() -> String {

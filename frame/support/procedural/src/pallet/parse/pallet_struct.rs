@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2020-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -36,7 +36,9 @@ pub struct PalletStructDef {
 	/// The keyword Pallet used (contains span).
 	pub pallet: keyword::Pallet,
 	/// Whether the trait `Store` must be generated.
-	pub store: Option<(syn::Visibility, keyword::Store)>
+	pub store: Option<(syn::Visibility, keyword::Store)>,
+	/// The span of the pallet::pallet attribute.
+	pub attr_span: proc_macro2::Span,
 }
 
 /// Parse for `#[pallet::generate_store($vis trait Store)]`
@@ -64,7 +66,11 @@ impl syn::parse::Parse for PalletStructAttr {
 }
 
 impl PalletStructDef {
-	pub fn try_from(index: usize, item: &mut syn::Item) -> syn::Result<Self> {
+	pub fn try_from(
+		attr_span: proc_macro2::Span,
+		index: usize,
+		item: &mut syn::Item,
+	) -> syn::Result<Self> {
 		let item = if let syn::Item::Struct(item) = item {
 			item
 		} else {
@@ -72,7 +78,7 @@ impl PalletStructDef {
 			return Err(syn::Error::new(item.span(), msg));
 		};
 
-		let mut event_attrs: Vec<PalletStructAttr> = helper::take_item_attrs(&mut item.attrs)?;
+		let mut event_attrs: Vec<PalletStructAttr> = helper::take_item_pallet_attrs(&mut item.attrs)?;
 		if event_attrs.len() > 1 {
 			let msg = "Invalid pallet::pallet, multiple argument pallet::generate_store found";
 			return Err(syn::Error::new(event_attrs[1].keyword.span(), msg));
@@ -94,6 +100,6 @@ impl PalletStructDef {
 		let mut instances = vec![];
 		instances.push(helper::check_type_def_gen_no_bounds(&item.generics, item.ident.span())?);
 
-		Ok(Self { index, instances, pallet, store })
+		Ok(Self { index, instances, pallet, store, attr_span })
 	}
 }

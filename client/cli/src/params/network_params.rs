@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2018-2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2018-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -18,15 +18,15 @@
 
 use crate::params::node_key_params::NodeKeyParams;
 use sc_network::{
-	config::{NetworkConfiguration, NodeKeyConfig, NonReservedPeerMode, TransportConfig},
+	config::{NetworkConfiguration, NodeKeyConfig, NonReservedPeerMode, SetConfig, TransportConfig},
 	multiaddr::Protocol,
 };
 use sc_service::{ChainSpec, ChainType, config::{Multiaddr, MultiaddrWithPeerId}};
-use std::path::PathBuf;
+use std::{borrow::Cow, path::PathBuf};
 use structopt::StructOpt;
 
 /// Parameters used to create the network configuration.
-#[derive(Debug, StructOpt)]
+#[derive(Debug, StructOpt, Clone)]
 pub struct NetworkParams {
 	/// Specify a list of bootnodes.
 	#[structopt(long = "bootnodes", value_name = "ADDR")]
@@ -36,10 +36,14 @@ pub struct NetworkParams {
 	#[structopt(long = "reserved-nodes", value_name = "ADDR")]
 	pub reserved_nodes: Vec<MultiaddrWithPeerId>,
 
-	/// Whether to only allow connections to/from reserved nodes.
+	/// Whether to only synchronize the chain with reserved nodes.
 	///
-	/// If you are a validator your node might still connect to other validator
-	/// nodes regardless of whether they are defined as reserved nodes.
+	/// Also disables automatic peer discovery.
+	///
+	/// TCP connections might still be established with non-reserved nodes.
+	/// In particular, if you are a validator your node might still connect to other
+	/// validator nodes and collator nodes regardless of whether they are defined as
+	/// reserved nodes.
 	#[structopt(long = "reserved-only")]
 	pub reserved_only: bool,
 
@@ -49,6 +53,10 @@ pub struct NetworkParams {
 	pub public_addr: Vec<Multiaddr>,
 
 	/// Listen on this multiaddress.
+	///
+	/// By default:
+	/// If `--validator` is passed: `/ip4/0.0.0.0/tcp/<port>` and `/ip6/[::]/tcp/<port>`.
+	/// Otherwise: `/ip4/0.0.0.0/tcp/<port>/ws` and `/ip6/[::]/tcp/<port>/ws`.
 	#[structopt(long = "listen-addr", value_name = "LISTEN_ADDR")]
 	pub listen_addr: Vec<Multiaddr>,
 
@@ -56,11 +64,18 @@ pub struct NetworkParams {
 	#[structopt(long = "port", value_name = "PORT", conflicts_with_all = &[ "listen-addr" ])]
 	pub port: Option<u16>,
 
-	/// Forbid connecting to private IPv4 addresses (as specified in
+	/// Always forbid connecting to private IPv4 addresses (as specified in
 	/// [RFC1918](https://tools.ietf.org/html/rfc1918)), unless the address was passed with
-	/// `--reserved-nodes` or `--bootnodes`.
-	#[structopt(long = "no-private-ipv4")]
+	/// `--reserved-nodes` or `--bootnodes`. Enabled by default for chains marked as "live" in
+	/// their chain specifications.
+	#[structopt(long = "no-private-ipv4", conflicts_with_all = &["allow-private-ipv4"])]
 	pub no_private_ipv4: bool,
+
+	/// Always accept connecting to private IPv4 addresses (as specified in
+	/// [RFC1918](https://tools.ietf.org/html/rfc1918)). Enabled by default for chains marked as
+	/// "local" in their chain specifications, or when `--dev` is passed.
+	#[structopt(long = "allow-private-ipv4", conflicts_with_all = &["no-private-ipv4"])]
+	pub allow_private_ipv4: bool,
 
 	/// Specify the number of outgoing connections we're trying to maintain.
 	#[structopt(long = "out-peers", value_name = "COUNT", default_value = "25")]
@@ -106,6 +121,10 @@ pub struct NetworkParams {
 	/// security improvements.
 	#[structopt(long)]
 	pub kademlia_disjoint_query_paths: bool,
+
+	/// Join the IPFS network and serve transactions over bitswap protocol.
+	#[structopt(long)]
+	pub ipfs_server: bool,
 }
 
 impl NetworkParams {
@@ -114,6 +133,7 @@ impl NetworkParams {
 		&self,
 		chain_spec: &Box<dyn ChainSpec>,
 		is_dev: bool,
+		is_validator: bool,
 		net_config_path: Option<PathBuf>,
 		client_id: &str,
 		node_name: &str,
@@ -123,14 +143,27 @@ impl NetworkParams {
 		let port = self.port.unwrap_or(default_listen_port);
 
 		let listen_addresses = if self.listen_addr.is_empty() {
-			vec![
-				Multiaddr::empty()
-					.with(Protocol::Ip6([0, 0, 0, 0, 0, 0, 0, 0].into()))
-					.with(Protocol::Tcp(port)),
-				Multiaddr::empty()
-					.with(Protocol::Ip4([0, 0, 0, 0].into()))
-					.with(Protocol::Tcp(port)),
-			]
+			if is_validator {
+				vec![
+					Multiaddr::empty()
+						.with(Protocol::Ip6([0, 0, 0, 0, 0, 0, 0, 0].into()))
+						.with(Protocol::Tcp(port)),
+					Multiaddr::empty()
+						.with(Protocol::Ip4([0, 0, 0, 0].into()))
+						.with(Protocol::Tcp(port)),
+				]
+			} else {
+				vec![
+					Multiaddr::empty()
+						.with(Protocol::Ip6([0, 0, 0, 0, 0, 0, 0, 0].into()))
+						.with(Protocol::Tcp(port))
+						.with(Protocol::Ws(Cow::Borrowed("/"))),
+					Multiaddr::empty()
+						.with(Protocol::Ip4([0, 0, 0, 0].into()))
+						.with(Protocol::Tcp(port))
+						.with(Protocol::Ws(Cow::Borrowed("/"))),
+				]
+			}
 		} else {
 			self.listen_addr.clone()
 		};
@@ -147,32 +180,44 @@ impl NetworkParams {
 			|| is_dev
 			|| matches!(chain_type, ChainType::Local | ChainType::Development);
 
+		let allow_private_ipv4 = match (self.allow_private_ipv4, self.no_private_ipv4) {
+			(true, true) => unreachable!("`*_private_ipv4` flags are mutually exclusive; qed"),
+			(true, false) => true,
+			(false, true) => false,
+			(false, false) => is_dev || matches!(chain_type, ChainType::Local | ChainType::Development),
+		};
+
 		NetworkConfiguration {
 			boot_nodes,
 			net_config_path,
-			reserved_nodes: self.reserved_nodes.clone(),
-			non_reserved_mode: if self.reserved_only {
-				NonReservedPeerMode::Deny
-			} else {
-				NonReservedPeerMode::Accept
+			default_peers_set: SetConfig {
+				in_peers: self.in_peers,
+				out_peers: self.out_peers,
+				reserved_nodes: self.reserved_nodes.clone(),
+				non_reserved_mode: if self.reserved_only {
+					NonReservedPeerMode::Deny
+				} else {
+					NonReservedPeerMode::Accept
+				},
 			},
 			listen_addresses,
 			public_addresses,
-			notifications_protocols: Vec::new(),
+			extra_sets: Vec::new(),
 			request_response_protocols: Vec::new(),
 			node_key,
 			node_name: node_name.to_string(),
 			client_version: client_id.to_string(),
-			in_peers: self.in_peers,
-			out_peers: self.out_peers,
 			transport: TransportConfig::Normal {
 				enable_mdns: !is_dev && !self.no_mdns,
-				allow_private_ipv4: !self.no_private_ipv4,
+				allow_private_ipv4,
 				wasm_external_transport: None,
 			},
 			max_parallel_downloads: self.max_parallel_downloads,
+			enable_dht_random_walk: !self.reserved_only,
 			allow_non_globals_in_dht,
 			kademlia_disjoint_query_paths: self.kademlia_disjoint_query_paths,
+			yamux_window_size: None,
+			ipfs_server: self.ipfs_server,
 		}
 	}
 }

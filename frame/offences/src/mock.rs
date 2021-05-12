@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2018-2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2018-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,7 +20,7 @@
 #![cfg(test)]
 
 use std::cell::RefCell;
-use crate::{Module, Config};
+use crate::Config;
 use codec::Encode;
 use sp_runtime::Perbill;
 use sp_staking::{
@@ -31,20 +31,15 @@ use sp_runtime::testing::Header;
 use sp_runtime::traits::{IdentityLookup, BlakeTwo256};
 use sp_core::H256;
 use frame_support::{
-	impl_outer_origin, impl_outer_event, parameter_types, StorageMap, StorageDoubleMap,
+	parameter_types, StorageMap, StorageDoubleMap,
 	weights::{Weight, constants::{WEIGHT_PER_SECOND, RocksDbWeight}},
 };
-use frame_system as system;
-
-impl_outer_origin!{
-	pub enum Origin for Runtime {}
-}
+use crate as offences;
 
 pub struct OnOffenceHandler;
 
 thread_local! {
 	pub static ON_OFFENCE_PERBILL: RefCell<Vec<Perbill>> = RefCell::new(Default::default());
-	pub static CAN_REPORT: RefCell<bool> = RefCell::new(true);
 	pub static OFFENCE_WEIGHT: RefCell<Weight> = RefCell::new(Default::default());
 }
 
@@ -55,25 +50,13 @@ impl<Reporter, Offender>
 		_offenders: &[OffenceDetails<Reporter, Offender>],
 		slash_fraction: &[Perbill],
 		_offence_session: SessionIndex,
-	) -> Result<Weight, ()> {
-		if <Self as offence::OnOffenceHandler<Reporter, Offender, Weight>>::can_report() {
-			ON_OFFENCE_PERBILL.with(|f| {
-				*f.borrow_mut() = slash_fraction.to_vec();
-			});
+	) -> Weight {
+		ON_OFFENCE_PERBILL.with(|f| {
+			*f.borrow_mut() = slash_fraction.to_vec();
+		});
 
-			Ok(OFFENCE_WEIGHT.with(|w| *w.borrow()))
-		} else {
-			Err(())
-		}
+		OFFENCE_WEIGHT.with(|w| *w.borrow())
 	}
-
-	fn can_report() -> bool {
-		CAN_REPORT.with(|c| *c.borrow())
-	}
-}
-
-pub fn set_can_report(can_report: bool) {
-	CAN_REPORT.with(|c| *c.borrow_mut() = can_report);
 }
 
 pub fn with_on_offence_fractions<R, F: FnOnce(&mut Vec<Perbill>) -> R>(f: F) -> R {
@@ -82,13 +65,20 @@ pub fn with_on_offence_fractions<R, F: FnOnce(&mut Vec<Perbill>) -> R>(f: F) -> 
 	})
 }
 
-pub fn set_offence_weight(new: Weight) {
-	OFFENCE_WEIGHT.with(|w| *w.borrow_mut() = new);
-}
+type UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Runtime>;
+type Block = frame_system::mocking::MockBlock<Runtime>;
 
-// Workaround for https://github.com/rust-lang/rust/issues/26925 . Remove when sorted.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Runtime;
+frame_support::construct_runtime!(
+	pub enum Runtime where
+		Block = Block,
+		NodeBlock = Block,
+		UncheckedExtrinsic = UncheckedExtrinsic,
+	{
+		System: frame_system::{Pallet, Call, Config, Storage, Event<T>},
+		Offences: offences::{Pallet, Call, Storage, Event},
+	}
+);
+
 parameter_types! {
 	pub const BlockHashCount: u64 = 250;
 	pub BlockWeights: frame_system::limits::BlockWeights =
@@ -102,43 +92,28 @@ impl frame_system::Config for Runtime {
 	type Origin = Origin;
 	type Index = u64;
 	type BlockNumber = u64;
-	type Call = ();
+	type Call = Call;
 	type Hash = H256;
 	type Hashing = BlakeTwo256;
 	type AccountId = u64;
 	type Lookup = IdentityLookup<Self::AccountId>;
 	type Header = Header;
-	type Event = TestEvent;
+	type Event = Event;
 	type BlockHashCount = BlockHashCount;
 	type Version = ();
-	type PalletInfo = ();
+	type PalletInfo = PalletInfo;
 	type AccountData = ();
 	type OnNewAccount = ();
 	type OnKilledAccount = ();
 	type SystemWeightInfo = ();
-}
-
-parameter_types! {
-	pub OffencesWeightSoftLimit: Weight =
-		Perbill::from_percent(60) * BlockWeights::get().max_block;
+	type SS58Prefix = ();
+	type OnSetCode = ();
 }
 
 impl Config for Runtime {
-	type Event = TestEvent;
+	type Event = Event;
 	type IdentificationTuple = u64;
 	type OnOffenceHandler = OnOffenceHandler;
-	type WeightSoftLimit = OffencesWeightSoftLimit;
-}
-
-mod offences {
-	pub use crate::Event;
-}
-
-impl_outer_event! {
-	pub enum TestEvent for Runtime {
-		system<T>,
-		offences,
-	}
 }
 
 pub fn new_test_ext() -> sp_io::TestExternalities {
@@ -147,10 +122,6 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
 	ext.execute_with(|| System::set_block_number(1));
 	ext
 }
-
-/// Offences module.
-pub type Offences = Module<Runtime>;
-pub type System = frame_system::Module<Runtime>;
 
 pub const KIND: [u8; 16] = *b"test_report_1234";
 

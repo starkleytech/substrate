@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -24,6 +24,7 @@ mod tests;
 use futures::{future::BoxFuture, FutureExt, TryFutureExt};
 use futures::{channel::oneshot, compat::Compat};
 use sc_rpc_api::{DenyUnsafe, Receiver};
+use sc_tracing::logging;
 use sp_utils::mpsc::TracingUnboundedSender;
 use sp_runtime::traits::{self, Header as HeaderT};
 
@@ -33,6 +34,7 @@ pub use sc_rpc_api::system::*;
 pub use self::helpers::{SystemInfo, Health, PeerInfo, NodeRole, SyncState};
 pub use self::gen_client::Client as SystemClient;
 
+/// Early exit for RPCs that require `--rpc-methods=Unsafe` to be enabled
 macro_rules! bail_if_unsafe {
 	($value: expr) => {
 		if let Err(err) = $value.check_if_safe() {
@@ -65,6 +67,8 @@ pub enum Request<B: traits::Block> {
 	NetworkAddReservedPeer(String, oneshot::Sender<Result<()>>),
 	/// Must return any potential parse error.
 	NetworkRemoveReservedPeer(String, oneshot::Sender<Result<()>>),
+	/// Must return the list of reserved peers
+	NetworkReservedPeers(oneshot::Sender<Vec<String>>),
 	/// Must return the node role.
 	NodeRoles(oneshot::Sender<Vec<NodeRole>>),
 	/// Must return the state of the node syncing.
@@ -186,6 +190,12 @@ impl<B: traits::Block> SystemApi<B::Hash, <B::Header as HeaderT>::Number> for Sy
 		}.boxed().compat()
 	}
 
+	fn system_reserved_peers(&self) -> Receiver<Vec<String>> {
+		let (tx, rx) = oneshot::channel();
+		let _ = self.send_back.unbounded_send(Request::NetworkReservedPeers(tx));
+		Receiver(Compat::new(rx))
+	}
+
 	fn system_node_roles(&self) -> Receiver<Vec<NodeRole>> {
 		let (tx, rx) = oneshot::channel();
 		let _ = self.send_back.unbounded_send(Request::NodeRoles(tx));
@@ -200,12 +210,12 @@ impl<B: traits::Block> SystemApi<B::Hash, <B::Header as HeaderT>::Number> for Sy
 
 	fn system_add_log_filter(&self, directives: String) -> std::result::Result<(), rpc::Error> {
 		self.deny_unsafe.check_if_safe()?;
-		sc_tracing::add_directives(&directives);
-		sc_tracing::reload_filter().map_err(|_e| rpc::Error::internal_error())
+		logging::add_directives(&directives);
+		logging::reload_filter().map_err(|_e| rpc::Error::internal_error())
 	}
 
 	fn system_reset_log_filter(&self)-> std::result::Result<(), rpc::Error> {
 		self.deny_unsafe.check_if_safe()?;
-		sc_tracing::reset_log_filter().map_err(|_e| rpc::Error::internal_error())
+		logging::reset_log_filter().map_err(|_e| rpc::Error::internal_error())
 	}
 }

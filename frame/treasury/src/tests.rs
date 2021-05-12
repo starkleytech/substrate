@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2020-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,40 +19,35 @@
 
 #![cfg(test)]
 
+use crate as treasury;
 use super::*;
 use std::cell::RefCell;
 use frame_support::{
-	assert_noop, assert_ok, impl_outer_origin, impl_outer_event, parameter_types,
-	traits::{OnInitialize}
+	assert_noop, assert_ok, parameter_types,
+	traits::OnInitialize, PalletId
 };
-use frame_system::{self as system};
 
 use sp_core::H256;
 use sp_runtime::{
-	ModuleId,
 	testing::Header,
 	traits::{BlakeTwo256, IdentityLookup},
 };
 
-impl_outer_origin! {
-	pub enum Origin for Test where system = frame_system {}
-}
+type UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Test>;
+type Block = frame_system::mocking::MockBlock<Test>;
 
-mod treasury {
-	// Re-export needed for `impl_outer_event!`.
-	pub use super::super::*;
-}
-
-impl_outer_event! {
-	pub enum Event for Test {
-		system<T>,
-		pallet_balances<T>,
-		treasury<T>,
+frame_support::construct_runtime!(
+	pub enum Test where
+		Block = Block,
+		NodeBlock = Block,
+		UncheckedExtrinsic = UncheckedExtrinsic,
+	{
+		System: frame_system::{Pallet, Call, Config, Storage, Event<T>},
+		Balances: pallet_balances::{Pallet, Call, Storage, Config<T>, Event<T>},
+		Treasury: treasury::{Pallet, Call, Storage, Config, Event<T>},
 	}
-}
+);
 
-#[derive(Clone, Eq, PartialEq)]
-pub struct Test;
 parameter_types! {
 	pub const BlockHashCount: u64 = 250;
 	pub BlockWeights: frame_system::limits::BlockWeights =
@@ -66,7 +61,7 @@ impl frame_system::Config for Test {
 	type Origin = Origin;
 	type Index = u64;
 	type BlockNumber = u64;
-	type Call = ();
+	type Call = Call;
 	type Hash = H256;
 	type Hashing = BlakeTwo256;
 	type AccountId = u128; // u64 is not enough to hold bytes used to generate bounty account
@@ -75,11 +70,13 @@ impl frame_system::Config for Test {
 	type Event = Event;
 	type BlockHashCount = BlockHashCount;
 	type Version = ();
-	type PalletInfo = ();
+	type PalletInfo = PalletInfo;
 	type AccountData = pallet_balances::AccountData<u64>;
 	type OnNewAccount = ();
 	type OnKilledAccount = ();
 	type SystemWeightInfo = ();
+	type SS58Prefix = ();
+	type OnSetCode = ();
 }
 parameter_types! {
 	pub const ExistentialDeposit: u64 = 1;
@@ -101,14 +98,15 @@ parameter_types! {
 	pub const ProposalBondMinimum: u64 = 1;
 	pub const SpendPeriod: u64 = 2;
 	pub const Burn: Permill = Permill::from_percent(50);
-	pub const TreasuryModuleId: ModuleId = ModuleId(*b"py/trsry");
+	pub const TreasuryPalletId: PalletId = PalletId(*b"py/trsry");
 	pub const BountyUpdatePeriod: u32 = 20;
 	pub const BountyCuratorDeposit: Permill = Permill::from_percent(50);
 	pub const BountyValueMinimum: u64 = 1;
+	pub const MaxApprovals: u32 = 100;
 }
 impl Config for Test {
-	type ModuleId = TreasuryModuleId;
-	type Currency = pallet_balances::Module<Test>;
+	type PalletId = TreasuryPalletId;
+	type Currency = pallet_balances::Pallet<Test>;
 	type ApproveOrigin = frame_system::EnsureRoot<u128>;
 	type RejectOrigin = frame_system::EnsureRoot<u128>;
 	type Event = Event;
@@ -120,10 +118,8 @@ impl Config for Test {
 	type BurnDestination = ();  // Just gets burned.
 	type WeightInfo = ();
 	type SpendFunds = ();
+	type MaxApprovals = MaxApprovals;
 }
-type System = frame_system::Module<Test>;
-type Balances = pallet_balances::Module<Test>;
-type Treasury = Module<Test>;
 
 pub fn new_test_ext() -> sp_io::TestExternalities {
 	let mut t = frame_system::GenesisConfig::default().build_storage::<Test>().unwrap();
@@ -131,7 +127,7 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
 		// Total issuance will be 200 with treasury account initialized at ED.
 		balances: vec![(0, 100), (1, 98), (2, 1)],
 	}.assimilate_storage(&mut t).unwrap();
-	GenesisConfig::default().assimilate_storage::<Test, _>(&mut t).unwrap();
+	treasury::GenesisConfig::default().assimilate_storage::<Test, _>(&mut t).unwrap();
 	t.into()
 }
 
@@ -357,11 +353,28 @@ fn genesis_funding_works() {
 		// Total issuance will be 200 with treasury account initialized with 100.
 		balances: vec![(0, 100), (Treasury::account_id(), initial_funding)],
 	}.assimilate_storage(&mut t).unwrap();
-	GenesisConfig::default().assimilate_storage::<Test, _>(&mut t).unwrap();
+	treasury::GenesisConfig::default().assimilate_storage::<Test, _>(&mut t).unwrap();
 	let mut t: sp_io::TestExternalities = t.into();
 
 	t.execute_with(|| {
 		assert_eq!(Balances::free_balance(Treasury::account_id()), initial_funding);
 		assert_eq!(Treasury::pot(), initial_funding - Balances::minimum_balance());
+	});
+}
+
+#[test]
+fn max_approvals_limited() {
+	new_test_ext().execute_with(|| {
+		Balances::make_free_balance_be(&Treasury::account_id(), u64::max_value());
+		Balances::make_free_balance_be(&0, u64::max_value());
+
+		for _ in 0 .. MaxApprovals::get() {
+			assert_ok!(Treasury::propose_spend(Origin::signed(0), 100, 3));
+			assert_ok!(Treasury::approve_proposal(Origin::root(), 0));
+		}
+
+		// One too many will fail
+		assert_ok!(Treasury::propose_spend(Origin::signed(0), 100, 3));
+		assert_noop!(Treasury::approve_proposal(Origin::root(), 0), Error::<Test, _>::TooManyApprovals);
 	});
 }

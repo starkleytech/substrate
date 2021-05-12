@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2020-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,8 +14,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
-use sp_runtime::traits::Block as _;
 
 pub trait SomeAssociation {
 	type A: frame_support::dispatch::Parameter + Default;
@@ -108,7 +106,7 @@ pub mod pallet {
 	}
 
 	#[pallet::pallet]
-	pub struct Pallet<T>(PhantomData<T>);
+	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
 	impl<T: Config> Hooks<T::BlockNumber> for Pallet<T> {
@@ -226,6 +224,8 @@ impl frame_system::Config for Runtime {
 	type OnNewAccount = ();
 	type OnKilledAccount = ();
 	type SystemWeightInfo = ();
+	type SS58Prefix = ();
+	type OnSetCode = ();
 }
 impl pallet::Config for Runtime {
 	type Event = Event;
@@ -248,10 +248,10 @@ frame_support::construct_runtime!(
 		NodeBlock = Block,
 		UncheckedExtrinsic = UncheckedExtrinsic
 	{
-		System: frame_system::{Module, Call, Event<T>},
+		System: frame_system::{Pallet, Call, Event<T>},
 		// NOTE: name Example here is needed in order to have same module prefix
-		Example: pallet::{Module, Call, Event<T>, Config<T>, Storage},
-		PalletOld: pallet_old::{Module, Call, Event<T>, Config<T>, Storage},
+		Example: pallet::{Pallet, Call, Event<T>, Config<T>, Storage},
+		PalletOld: pallet_old::{Pallet, Call, Event<T>, Config<T>, Storage},
 	}
 );
 

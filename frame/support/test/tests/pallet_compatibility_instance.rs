@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2020-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,8 +14,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
-use sp_runtime::traits::Block as _;
 
 mod pallet_old {
 	use frame_support::{
@@ -218,6 +216,8 @@ impl frame_system::Config for Runtime {
 	type OnNewAccount = ();
 	type OnKilledAccount = ();
 	type SystemWeightInfo = ();
+	type SS58Prefix = ();
+	type OnSetCode = ();
 }
 impl pallet::Config for Runtime {
 	type Event = Event;
@@ -260,13 +260,13 @@ frame_support::construct_runtime!(
 		NodeBlock = Block,
 		UncheckedExtrinsic = UncheckedExtrinsic
 	{
-		System: frame_system::{Module, Call, Event<T>},
-		Example: pallet::{Module, Call, Event<T>, Config<T>, Storage},
-		PalletOld: pallet_old::{Module, Call, Event<T>, Config<T>, Storage},
-		Instance2Example: pallet::<Instance2>::{Module, Call, Event<T>, Config<T>, Storage},
-		PalletOld2: pallet_old::<Instance2>::{Module, Call, Event<T>, Config<T>, Storage},
-		Instance3Example: pallet::<Instance3>::{Module, Call, Event<T>, Config<T>, Storage},
-		PalletOld3: pallet_old::<Instance3>::{Module, Call, Event<T>, Config<T>, Storage},
+		System: frame_system::{Pallet, Call, Event<T>},
+		Example: pallet::{Pallet, Call, Event<T>, Config<T>, Storage},
+		PalletOld: pallet_old::{Pallet, Call, Event<T>, Config<T>, Storage},
+		Instance2Example: pallet::<Instance2>::{Pallet, Call, Event<T>, Config<T>, Storage},
+		PalletOld2: pallet_old::<Instance2>::{Pallet, Call, Event<T>, Config<T>, Storage},
+		Instance3Example: pallet::<Instance3>::{Pallet, Call, Event<T>, Config<T>, Storage},
+		PalletOld3: pallet_old::<Instance3>::{Pallet, Call, Event<T>, Config<T>, Storage},
 	}
 );
 

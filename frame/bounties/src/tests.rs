@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2020-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,47 +19,45 @@
 
 #![cfg(test)]
 
+use crate as pallet_bounties;
 use super::*;
 use std::cell::RefCell;
 
 use frame_support::{
-	assert_noop, assert_ok, impl_outer_origin, parameter_types, weights::Weight,
-	impl_outer_event, traits::{OnInitialize}
+	assert_noop, assert_ok, parameter_types, weights::Weight, traits::OnInitialize,
+	PalletId
 };
 
 use sp_core::H256;
 use sp_runtime::{
-	Perbill, ModuleId,
+	Perbill,
 	testing::Header,
 	traits::{BlakeTwo256, IdentityLookup, BadOrigin},
 };
 
-impl_outer_origin! {
-	pub enum Origin for Test where system = frame_system {}
-}
+type UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Test>;
+type Block = frame_system::mocking::MockBlock<Test>;
 
-mod bounties {
-	// Re-export needed for `impl_outer_event!`.
-	pub use crate::*;
-}
-
-impl_outer_event! {
-	pub enum Event for Test {
-		system<T>,
-		pallet_balances<T>,
-		pallet_treasury<T>,
-		bounties<T>,
+frame_support::construct_runtime!(
+	pub enum Test where
+		Block = Block,
+		NodeBlock = Block,
+		UncheckedExtrinsic = UncheckedExtrinsic,
+	{
+		System: frame_system::{Pallet, Call, Config, Storage, Event<T>},
+		Balances: pallet_balances::{Pallet, Call, Storage, Config<T>, Event<T>},
+		Bounties: pallet_bounties::{Pallet, Call, Storage, Event<T>},
+		Treasury: pallet_treasury::{Pallet, Call, Storage, Config, Event<T>},
 	}
-}
+);
 
-#[derive(Clone, Eq, PartialEq)]
-pub struct Test;
 parameter_types! {
 	pub const BlockHashCount: u64 = 250;
 	pub const MaximumBlockWeight: Weight = 1024;
 	pub const MaximumBlockLength: u32 = 2 * 1024;
 	pub const AvailableBlockRatio: Perbill = Perbill::one();
 }
+
 impl frame_system::Config for Test {
 	type BaseCallFilter = ();
 	type BlockWeights = ();
@@ -68,7 +66,7 @@ impl frame_system::Config for Test {
 	type Origin = Origin;
 	type Index = u64;
 	type BlockNumber = u64;
-	type Call = ();
+	type Call = Call;
 	type Hash = H256;
 	type Hashing = BlakeTwo256;
 	type AccountId = u128; // u64 is not enough to hold bytes used to generate bounty account
@@ -77,11 +75,13 @@ impl frame_system::Config for Test {
 	type Event = Event;
 	type BlockHashCount = BlockHashCount;
 	type Version = ();
-	type PalletInfo = ();
+	type PalletInfo = PalletInfo;
 	type AccountData = pallet_balances::AccountData<u64>;
 	type OnNewAccount = ();
 	type OnKilledAccount = ();
 	type SystemWeightInfo = ();
+	type SS58Prefix = ();
+	type OnSetCode = ();
 }
 parameter_types! {
 	pub const ExistentialDeposit: u64 = 1;
@@ -104,12 +104,13 @@ parameter_types! {
 	pub const SpendPeriod: u64 = 2;
 	pub const Burn: Permill = Permill::from_percent(50);
 	pub const DataDepositPerByte: u64 = 1;
-	pub const TreasuryModuleId: ModuleId = ModuleId(*b"py/trsry");
+	pub const TreasuryPalletId: PalletId = PalletId(*b"py/trsry");
+	pub const MaxApprovals: u32 = 100;
 }
 // impl pallet_treasury::Config for Test {
 impl pallet_treasury::Config for Test {
-	type ModuleId = TreasuryModuleId;
-	type Currency = pallet_balances::Module<Test>;
+	type PalletId = TreasuryPalletId;
+	type Currency = pallet_balances::Pallet<Test>;
 	type ApproveOrigin = frame_system::EnsureRoot<u128>;
 	type RejectOrigin = frame_system::EnsureRoot<u128>;
 	type Event = Event;
@@ -121,6 +122,7 @@ impl pallet_treasury::Config for Test {
 	type BurnDestination = ();  // Just gets burned.
 	type WeightInfo = ();
 	type SpendFunds = Bounties;
+	type MaxApprovals = MaxApprovals;
 }
 parameter_types! {
 	pub const BountyDepositBase: u64 = 80;
@@ -141,10 +143,8 @@ impl Config for Test {
 	type MaximumReasonLength = MaximumReasonLength;
 	type WeightInfo = ();
 }
-type System = frame_system::Module<Test>;
-type Balances = pallet_balances::Module<Test>;
-type Treasury = pallet_treasury::Module<Test>;
-type Bounties = Module<Test>;
+
+type TreasuryError = pallet_treasury::Error::<Test, pallet_treasury::DefaultInstance>;
 
 pub fn new_test_ext() -> sp_io::TestExternalities {
 	let mut t = frame_system::GenesisConfig::default().build_storage::<Test>().unwrap();
@@ -159,7 +159,7 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
 fn last_event() -> RawEvent<u64, u128> {
 	System::events().into_iter().map(|r| r.event)
 		.filter_map(|e| {
-			if let Event::bounties(inner) = e { Some(inner) } else { None }
+			if let Event::pallet_bounties(inner) = e { Some(inner) } else { None }
 		})
 		.last()
 		.unwrap()
@@ -205,7 +205,7 @@ fn spend_proposal_fails_when_proposer_poor() {
 	new_test_ext().execute_with(|| {
 		assert_noop!(
 			Treasury::propose_spend(Origin::signed(2), 100, 3),
-			Error::<Test>::InsufficientProposersBalance,
+			TreasuryError::InsufficientProposersBalance,
 		);
 	});
 }
@@ -258,21 +258,22 @@ fn reject_already_rejected_spend_proposal_fails() {
 
 		assert_ok!(Treasury::propose_spend(Origin::signed(0), 100, 3));
 		assert_ok!(Treasury::reject_proposal(Origin::root(), 0));
-		assert_noop!(Treasury::reject_proposal(Origin::root(), 0), Error::<Test>::InvalidIndex);
+		assert_noop!(Treasury::reject_proposal(Origin::root(), 0), TreasuryError::InvalidIndex);
 	});
 }
 
 #[test]
 fn reject_non_existent_spend_proposal_fails() {
 	new_test_ext().execute_with(|| {
-		assert_noop!(Treasury::reject_proposal(Origin::root(), 0), Error::<Test>::InvalidIndex);
+		assert_noop!(Treasury::reject_proposal(Origin::root(), 0),
+		pallet_treasury::Error::<Test, pallet_treasury::DefaultInstance>::InvalidIndex);
 	});
 }
 
 #[test]
 fn accept_non_existent_spend_proposal_fails() {
 	new_test_ext().execute_with(|| {
-		assert_noop!(Treasury::approve_proposal(Origin::root(), 0), Error::<Test>::InvalidIndex);
+		assert_noop!(Treasury::approve_proposal(Origin::root(), 0), TreasuryError::InvalidIndex);
 	});
 }
 
@@ -283,7 +284,7 @@ fn accept_already_rejected_spend_proposal_fails() {
 
 		assert_ok!(Treasury::propose_spend(Origin::signed(0), 100, 3));
 		assert_ok!(Treasury::reject_proposal(Origin::root(), 0));
-		assert_noop!(Treasury::approve_proposal(Origin::root(), 0), Error::<Test>::InvalidIndex);
+		assert_noop!(Treasury::approve_proposal(Origin::root(), 0), TreasuryError::InvalidIndex);
 	});
 }
 
@@ -314,7 +315,7 @@ fn pot_underflow_should_not_diminish() {
 		<Treasury as OnInitialize<u64>>::on_initialize(2);
 		assert_eq!(Treasury::pot(), 100); // Pot hasn't changed
 
-		let _ = Balances::deposit_into_existing(&Treasury::account_id(), 100).unwrap();
+		assert_ok!(Balances::deposit_into_existing(&Treasury::account_id(), 100));
 		<Treasury as OnInitialize<u64>>::on_initialize(4);
 		assert_eq!(Balances::free_balance(3), 150); // Fund has been spent
 		assert_eq!(Treasury::pot(), 25); // Pot has finally changed
@@ -691,7 +692,8 @@ fn claim_handles_high_fee() {
 		<Treasury as OnInitialize<u64>>::on_initialize(5);
 
 		// make fee > balance
-		let _ = Balances::slash(&Bounties::bounty_account_id(0), 10);
+		let res = Balances::slash(&Bounties::bounty_account_id(0), 10);
+		assert_eq!(res.0.peek(), 10);
 
 		assert_ok!(Bounties::claim_bounty(Origin::signed(1), 0));
 

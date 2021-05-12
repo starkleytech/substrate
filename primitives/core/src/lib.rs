@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -119,9 +119,10 @@ impl ExecutionContext {
 		match self {
 			Importing | Syncing | BlockConstruction =>
 				offchain::Capabilities::none(),
-			// Enable keystore and transaction pool by default for offchain calls.
+			// Enable keystore, transaction pool and Offchain DB reads by default for offchain calls.
 			OffchainCall(None) => [
 				offchain::Capability::Keystore,
+				offchain::Capability::OffchainDbRead,
 				offchain::Capability::TransactionPool,
 			][..].into(),
 			OffchainCall(Some((_, capabilities))) => *capabilities,
@@ -145,6 +146,12 @@ impl From<OpaqueMetadata> for Bytes {
 impl Deref for Bytes {
 	type Target = [u8];
 	fn deref(&self) -> &[u8] { &self.0[..] }
+}
+
+impl codec::WrapperTypeEncode for Bytes {}
+
+impl codec::WrapperTypeDecode for Bytes {
+	type Wrapped = Vec<u8>;
 }
 
 #[cfg(feature = "std")]
@@ -274,7 +281,7 @@ pub trait TypeId {
 
 /// A log level matching the one from `log` crate.
 ///
-/// Used internally by `sp_io::log` method.
+/// Used internally by `sp_io::logging::log` method.
 #[derive(Encode, Decode, PassByEnum, Copy, Clone)]
 pub enum LogLevel {
 	/// `Error` log level.
@@ -318,6 +325,53 @@ impl From<LogLevel> for log::Level {
 	fn from(l: LogLevel) -> Self {
 		use self::LogLevel::*;
 		match l {
+			Error => Self::Error,
+			Warn => Self::Warn,
+			Info => Self::Info,
+			Debug => Self::Debug,
+			Trace => Self::Trace,
+		}
+	}
+}
+
+/// Log level filter that expresses which log levels should be filtered.
+///
+/// This enum matches the [`log::LogLevelFilter`] enum.
+#[derive(Encode, Decode, PassByEnum, Copy, Clone)]
+pub enum LogLevelFilter {
+	/// `Off` log level filter.
+	Off = 0,
+	/// `Error` log level filter.
+	Error = 1,
+	/// `Warn` log level filter.
+	Warn = 2,
+	/// `Info` log level filter.
+	Info = 3,
+	/// `Debug` log level filter.
+	Debug = 4,
+	/// `Trace` log level filter.
+	Trace = 5,
+}
+
+impl From<LogLevelFilter> for log::LevelFilter {
+	fn from(l: LogLevelFilter) -> Self {
+		use self::LogLevelFilter::*;
+		match l {
+			Off => Self::Off,
+			Error => Self::Error,
+			Warn => Self::Warn,
+			Info => Self::Info,
+			Debug => Self::Debug,
+			Trace => Self::Trace,
+		}
+	}
+}
+
+impl From<log::LevelFilter> for LogLevelFilter {
+	fn from(l: log::LevelFilter) -> Self {
+		use log::LevelFilter::*;
+		match l {
+			Off => Self::Off,
 			Error => Self::Error,
 			Warn => Self::Warn,
 			Info => Self::Info,

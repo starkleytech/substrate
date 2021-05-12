@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2020-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,7 +22,7 @@
 use super::*;
 
 use frame_system::RawOrigin;
-use frame_benchmarking::{benchmarks_instance, account};
+use frame_benchmarking::{benchmarks_instance, account, impl_benchmark_test_suite};
 use frame_support::traits::OnInitialize;
 
 use crate::Module as Treasury;
@@ -55,7 +55,7 @@ fn create_approved_proposals<T: Config<I>, I: Instance>(n: u32) -> Result<(), &'
 		let proposal_id = <ProposalCount<I>>::get() - 1;
 		Treasury::<T, I>::approve_proposal(RawOrigin::Root.into(), proposal_id)?;
 	}
-	ensure!(<Approvals<I>>::get().len() == n as usize, "Not all approved");
+	ensure!(<Approvals<T, I>>::get().len() == n as usize, "Not all approved");
 	Ok(())
 }
 
@@ -66,7 +66,6 @@ fn setup_pot_account<T: Config<I>, I: Instance>() {
 }
 
 benchmarks_instance! {
-	_ { }
 
 	propose_spend {
 		let (caller, value, beneficiary_lookup) = setup_proposal::<T, _>(SEED);
@@ -86,6 +85,8 @@ benchmarks_instance! {
 	}: _(RawOrigin::Root, proposal_id)
 
 	approve_proposal {
+		let p in 0 .. T::MaxApprovals::get() - 1;
+		create_approved_proposals::<T, _>(p)?;
 		let (caller, value, beneficiary_lookup) = setup_proposal::<T, _>(SEED);
 		Treasury::<T, _>::propose_spend(
 			RawOrigin::Signed(caller).into(),
@@ -96,7 +97,7 @@ benchmarks_instance! {
 	}: _(RawOrigin::Root, proposal_id)
 
 	on_initialize_proposals {
-		let p in 0 .. 100;
+		let p in 0 .. T::MaxApprovals::get();
 		setup_pot_account::<T, _>();
 		create_approved_proposals::<T, _>(p)?;
 	}: {
@@ -104,19 +105,8 @@ benchmarks_instance! {
 	}
 }
 
-#[cfg(test)]
-mod tests {
-	use super::*;
-	use crate::tests::{new_test_ext, Test};
-	use frame_support::assert_ok;
-
-	#[test]
-	fn test_benchmarks() {
-		new_test_ext().execute_with(|| {
-			assert_ok!(test_benchmark_propose_spend::<Test>());
-			assert_ok!(test_benchmark_reject_proposal::<Test>());
-			assert_ok!(test_benchmark_approve_proposal::<Test>());
-			assert_ok!(test_benchmark_on_initialize_proposals::<Test>());
-		});
-	}
-}
+impl_benchmark_test_suite!(
+	Treasury,
+	crate::tests::new_test_ext(),
+	crate::tests::Test,
+);

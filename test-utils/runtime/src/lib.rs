@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -61,7 +61,7 @@ use sp_inherents::{CheckInherentsResult, InherentData};
 use cfg_if::cfg_if;
 
 // Ensure Babe and Aura use the same crypto to simplify things a bit.
-pub use sp_consensus_babe::{AuthorityId, SlotNumber, AllowedSlots};
+pub use sp_consensus_babe::{AuthorityId, Slot, AllowedSlots};
 
 pub type AuraId = sp_consensus_aura::sr25519::AuthorityId;
 
@@ -69,11 +69,26 @@ pub type AuraId = sp_consensus_aura::sr25519::AuthorityId;
 #[cfg(feature = "std")]
 include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
 
+#[cfg(feature = "std")]
+pub mod wasm_binary_logging_disabled {
+	include!(concat!(env!("OUT_DIR"), "/wasm_binary_logging_disabled.rs"));
+}
+
 /// Wasm binary unwrapped. If built with `SKIP_WASM_BUILD`, the function panics.
 #[cfg(feature = "std")]
 pub fn wasm_binary_unwrap() -> &'static [u8] {
 	WASM_BINARY.expect("Development wasm binary is not available. Testing is only \
 						supported with the flag disabled.")
+}
+
+/// Wasm binary unwrapped. If built with `SKIP_WASM_BUILD`, the function panics.
+#[cfg(feature = "std")]
+pub fn wasm_binary_logging_disabled_unwrap() -> &'static [u8] {
+	wasm_binary_logging_disabled::WASM_BINARY
+		.expect(
+			"Development wasm binary is not available. Testing is only supported with the flag \
+			disabled."
+		)
 }
 
 /// Test runtime version.
@@ -149,6 +164,8 @@ pub enum Extrinsic {
 	IncludeData(Vec<u8>),
 	StorageChange(Vec<u8>, Option<Vec<u8>>),
 	ChangesTrieConfigUpdate(Option<ChangesTrieConfiguration>),
+	OffchainIndexSet(Vec<u8>, Vec<u8>),
+	OffchainIndexClear(Vec<u8>),
 }
 
 parity_util_mem::malloc_size_of_is_0!(Extrinsic); // non-opaque extrinsic does not need this
@@ -173,10 +190,14 @@ impl BlindCheckable for Extrinsic {
 					Err(InvalidTransaction::BadProof.into())
 				}
 			},
-			Extrinsic::IncludeData(_) => Err(InvalidTransaction::BadProof.into()),
+			Extrinsic::IncludeData(v) => Ok(Extrinsic::IncludeData(v)),
 			Extrinsic::StorageChange(key, value) => Ok(Extrinsic::StorageChange(key, value)),
 			Extrinsic::ChangesTrieConfigUpdate(new_config) =>
 				Ok(Extrinsic::ChangesTrieConfigUpdate(new_config)),
+			Extrinsic::OffchainIndexSet(key, value) =>
+				Ok(Extrinsic::OffchainIndexSet(key, value)),
+			Extrinsic::OffchainIndexClear(key) =>
+				Ok(Extrinsic::OffchainIndexClear(key)),
 		}
 	}
 }
@@ -427,6 +448,37 @@ impl From<frame_system::Event<Runtime>> for Event {
 	}
 }
 
+impl frame_support::traits::PalletInfo for Runtime {
+	fn index<P: 'static>() -> Option<usize> {
+		let type_id = sp_std::any::TypeId::of::<P>();
+		if type_id == sp_std::any::TypeId::of::<system::Pallet<Runtime>>() {
+			return Some(0)
+		}
+		if type_id == sp_std::any::TypeId::of::<pallet_timestamp::Pallet<Runtime>>() {
+			return Some(1)
+		}
+		if type_id == sp_std::any::TypeId::of::<pallet_babe::Pallet<Runtime>>() {
+			return Some(2)
+		}
+
+		None
+	}
+	fn name<P: 'static>() -> Option<&'static str> {
+		let type_id = sp_std::any::TypeId::of::<P>();
+		if type_id == sp_std::any::TypeId::of::<system::Pallet<Runtime>>() {
+			return Some("System")
+		}
+		if type_id == sp_std::any::TypeId::of::<pallet_timestamp::Pallet<Runtime>>() {
+			return Some("Timestamp")
+		}
+		if type_id == sp_std::any::TypeId::of::<pallet_babe::Pallet<Runtime>>() {
+			return Some("Babe")
+		}
+
+		None
+	}
+}
+
 parameter_types! {
 	pub const BlockHashCount: BlockNumber = 2400;
 	pub const MinimumPeriod: u64 = 5;
@@ -457,11 +509,13 @@ impl frame_system::Config for Runtime {
 	type BlockHashCount = BlockHashCount;
 	type DbWeight = ();
 	type Version = ();
-	type PalletInfo = ();
+	type PalletInfo = Self;
 	type AccountData = ();
 	type OnNewAccount = ();
 	type OnKilledAccount = ();
 	type SystemWeightInfo = ();
+	type SS58Prefix = ();
+	type OnSetCode = ();
 }
 
 impl pallet_timestamp::Config for Runtime {
@@ -562,7 +616,7 @@ cfg_if! {
 				}
 
 				fn execute_block(block: Block) {
-					system::execute_block(block)
+					system::execute_block(block);
 				}
 
 				fn initialize_block(header: &<Block as BlockT>::Header) {
@@ -610,10 +664,6 @@ cfg_if! {
 
 				fn check_inherents(_block: Block, _data: InherentData) -> CheckInherentsResult {
 					CheckInherentsResult::new()
-				}
-
-				fn random_seed() -> <Block as BlockT>::Hash {
-					unimplemented!()
 				}
 			}
 
@@ -704,13 +754,15 @@ cfg_if! {
 				}
 
 				fn do_trace_log() {
-					frame_support::debug::RuntimeLogger::init();
-					frame_support::debug::trace!("Hey I'm runtime");
+					log::trace!("Hey I'm runtime");
 				}
 			}
 
 			impl sp_consensus_aura::AuraApi<Block, AuraId> for Runtime {
-				fn slot_duration() -> u64 { 1000 }
+				fn slot_duration() -> sp_consensus_aura::SlotDuration {
+					sp_consensus_aura::SlotDuration::from_millis(1000)
+				}
+
 				fn authorities() -> Vec<AuraId> {
 					system::authorities().into_iter().map(|a| {
 						let authority: sr25519::Public = a.into();
@@ -727,17 +779,21 @@ cfg_if! {
 						c: (3, 10),
 						genesis_authorities: system::authorities()
 							.into_iter().map(|x|(x, 1)).collect(),
-						randomness: <pallet_babe::Module<Runtime>>::randomness(),
+						randomness: <pallet_babe::Pallet<Runtime>>::randomness(),
 						allowed_slots: AllowedSlots::PrimaryAndSecondaryPlainSlots,
 					}
 				}
 
-				fn current_epoch_start() -> sp_consensus_babe::SlotNumber {
-					<pallet_babe::Module<Runtime>>::current_epoch_start()
+				fn current_epoch_start() -> Slot {
+					<pallet_babe::Pallet<Runtime>>::current_epoch_start()
 				}
 
 				fn current_epoch() -> sp_consensus_babe::Epoch {
-					<pallet_babe::Module<Runtime>>::current_epoch()
+					<pallet_babe::Pallet<Runtime>>::current_epoch()
+				}
+
+				fn next_epoch() -> sp_consensus_babe::Epoch {
+					<pallet_babe::Pallet<Runtime>>::next_epoch()
 				}
 
 				fn submit_report_equivocation_unsigned_extrinsic(
@@ -750,7 +806,7 @@ cfg_if! {
 				}
 
 				fn generate_key_ownership_proof(
-					_slot_number: sp_consensus_babe::SlotNumber,
+					_slot: sp_consensus_babe::Slot,
 					_authority_id: sp_consensus_babe::AuthorityId,
 				) -> Option<sp_consensus_babe::OpaqueKeyOwnershipProof> {
 					None
@@ -813,7 +869,7 @@ cfg_if! {
 				}
 
 				fn execute_block(block: Block) {
-					system::execute_block(block)
+					system::execute_block(block);
 				}
 
 				fn initialize_block(header: &<Block as BlockT>::Header) {
@@ -861,10 +917,6 @@ cfg_if! {
 
 				fn check_inherents(_block: Block, _data: InherentData) -> CheckInherentsResult {
 					CheckInherentsResult::new()
-				}
-
-				fn random_seed() -> <Block as BlockT>::Hash {
-					unimplemented!()
 				}
 			}
 
@@ -959,13 +1011,15 @@ cfg_if! {
 				}
 
 				fn do_trace_log() {
-					frame_support::debug::RuntimeLogger::init();
-					frame_support::debug::trace!("Hey I'm runtime");
+					log::trace!("Hey I'm runtime: {}", log::STATIC_MAX_LEVEL);
 				}
 			}
 
 			impl sp_consensus_aura::AuraApi<Block, AuraId> for Runtime {
-				fn slot_duration() -> u64 { 1000 }
+				fn slot_duration() -> sp_consensus_aura::SlotDuration {
+					sp_consensus_aura::SlotDuration::from_millis(1000)
+				}
+
 				fn authorities() -> Vec<AuraId> {
 					system::authorities().into_iter().map(|a| {
 						let authority: sr25519::Public = a.into();
@@ -982,17 +1036,21 @@ cfg_if! {
 						c: (3, 10),
 						genesis_authorities: system::authorities()
 							.into_iter().map(|x|(x, 1)).collect(),
-						randomness: <pallet_babe::Module<Runtime>>::randomness(),
+						randomness: <pallet_babe::Pallet<Runtime>>::randomness(),
 						allowed_slots: AllowedSlots::PrimaryAndSecondaryPlainSlots,
 					}
 				}
 
-				fn current_epoch_start() -> sp_consensus_babe::SlotNumber {
-					<pallet_babe::Module<Runtime>>::current_epoch_start()
+				fn current_epoch_start() -> Slot {
+					<pallet_babe::Pallet<Runtime>>::current_epoch_start()
 				}
 
 				fn current_epoch() -> sp_consensus_babe::Epoch {
-					<pallet_babe::Module<Runtime>>::current_epoch()
+					<pallet_babe::Pallet<Runtime>>::current_epoch()
+				}
+
+				fn next_epoch() -> sp_consensus_babe::Epoch {
+					<pallet_babe::Pallet<Runtime>>::next_epoch()
 				}
 
 				fn submit_report_equivocation_unsigned_extrinsic(
@@ -1005,7 +1063,7 @@ cfg_if! {
 				}
 
 				fn generate_key_ownership_proof(
-					_slot_number: sp_consensus_babe::SlotNumber,
+					_slot: sp_consensus_babe::Slot,
 					_authority_id: sp_consensus_babe::AuthorityId,
 				) -> Option<sp_consensus_babe::OpaqueKeyOwnershipProof> {
 					None
@@ -1139,13 +1197,9 @@ fn test_witness(proof: StorageProof, root: crate::Hash) {
 		root,
 	);
 	let mut overlay = sp_state_machine::OverlayedChanges::default();
-	#[cfg(feature = "std")]
-	let mut offchain_overlay = Default::default();
 	let mut cache = sp_state_machine::StorageTransactionCache::<_, _, BlockNumber>::default();
 	let mut ext = sp_state_machine::Ext::new(
 		&mut overlay,
-		#[cfg(feature = "std")]
-		&mut offchain_overlay,
 		&mut cache,
 		&backend,
 		#[cfg(feature = "std")]
@@ -1200,7 +1254,7 @@ mod tests {
 			(BlockId::Hash(hash), block)
 		};
 
-		client.import(BlockOrigin::Own, block).unwrap();
+		futures::executor::block_on(client.import(BlockOrigin::Own, block)).unwrap();
 
 		// Allocation of 1024k while having ~2048k should succeed.
 		let ret = client.runtime_api().vec_with_capacity(&new_block_id, 1048576);

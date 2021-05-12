@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2020-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,23 +24,26 @@ mod mock;
 use sp_std::prelude::*;
 use sp_std::vec;
 
-use frame_system::{RawOrigin, Module as System, Config as SystemConfig};
-use frame_benchmarking::{benchmarks, account};
-use frame_support::traits::{Currency, OnInitialize};
+use frame_system::{RawOrigin, Pallet as System, Config as SystemConfig};
+use frame_benchmarking::{benchmarks, account, impl_benchmark_test_suite};
+use frame_support::traits::{Currency, ValidatorSet, ValidatorSetWithIdentification};
 
-use sp_runtime::{Perbill, traits::{Convert, StaticLookup, Saturating, UniqueSaturatedInto}};
-use sp_staking::offence::{ReportOffence, Offence, OffenceDetails};
+use sp_runtime::{
+	Perbill,
+	traits::{Convert, StaticLookup, Saturating, UniqueSaturatedInto},
+};
+use sp_staking::offence::{ReportOffence, Offence};
 
-use pallet_balances::{Config as BalancesConfig};
+use pallet_balances::Config as BalancesConfig;
 use pallet_babe::BabeEquivocationOffence;
 use pallet_grandpa::{GrandpaEquivocationOffence, GrandpaTimeSlot};
-use pallet_im_online::{Config as ImOnlineConfig, Module as ImOnline, UnresponsivenessOffence};
+use pallet_im_online::{Config as ImOnlineConfig, Pallet as ImOnline, UnresponsivenessOffence};
 use pallet_offences::{Config as OffencesConfig, Module as Offences};
 use pallet_session::historical::{Config as HistoricalConfig, IdentificationTuple};
 use pallet_session::{Config as SessionConfig, SessionManager};
 use pallet_staking::{
-	Module as Staking, Config as StakingConfig, RewardDestination, ValidatorPrefs,
-	Exposure, IndividualExposure, ElectionStatus, MAX_NOMINATIONS, Event as StakingEvent
+	Module as Staking, Config as StakingConfig, RewardDestination, ValidatorPrefs, Exposure,
+	IndividualExposure, Event as StakingEvent,
 };
 
 const SEED: u32 = 0;
@@ -48,9 +51,8 @@ const SEED: u32 = 0;
 const MAX_REPORTERS: u32 = 100;
 const MAX_OFFENDERS: u32 = 100;
 const MAX_NOMINATORS: u32 = 100;
-const MAX_DEFERRED_OFFENCES: u32 = 100;
 
-pub struct Module<T: Config>(Offences<T>);
+pub struct Pallet<T: Config>(Offences<T>);
 
 pub trait Config:
 	SessionConfig
@@ -109,6 +111,7 @@ fn create_offender<T: Config>(n: u32, nominators: u32) -> Result<Offender<T>, &'
 
 	let validator_prefs = ValidatorPrefs {
 		commission: Perbill::from_percent(50),
+		.. Default::default()
 	};
 	Staking::<T>::validate(RawOrigin::Signed(controller.clone()).into(), validator_prefs)?;
 
@@ -175,6 +178,34 @@ fn make_offenders<T: Config>(num_offenders: u32, num_nominators: u32) -> Result<
 	Ok((id_tuples, offenders))
 }
 
+fn make_offenders_im_online<T: Config>(num_offenders: u32, num_nominators: u32) -> Result<
+	(Vec<pallet_im_online::IdentificationTuple<T>>, Vec<Offender<T>>),
+	&'static str
+> {
+	Staking::<T>::new_session(0);
+
+	let mut offenders = vec![];
+	for i in 0 .. num_offenders {
+		let offender = create_offender::<T>(i + 1, num_nominators)?;
+		offenders.push(offender);
+	}
+
+	Staking::<T>::start_session(0);
+
+	let id_tuples = offenders.iter()
+		.map(|offender| <
+				<T as ImOnlineConfig>::ValidatorSet as ValidatorSet<T::AccountId>
+			>::ValidatorIdOf::convert(offender.controller.clone())
+			.expect("failed to get validator id from account id"))
+		.map(|validator_id| <
+				<T as ImOnlineConfig>::ValidatorSet as ValidatorSetWithIdentification<T::AccountId>
+			>::IdentificationOf::convert(validator_id.clone())
+			.map(|full_id| (validator_id, full_id))
+			.expect("failed to convert validator id to full identification"))
+		.collect::<Vec<pallet_im_online::IdentificationTuple<T>>>();
+	Ok((id_tuples, offenders))
+}
+
 #[cfg(test)]
 fn check_events<T: Config, I: Iterator<Item = <T as SystemConfig>::Event>>(expected: I) {
 	let events = System::<T>::events() .into_iter()
@@ -198,18 +229,16 @@ fn check_events<T: Config, I: Iterator<Item = <T as SystemConfig>::Event>>(expec
 	}
 
 	if !length_mismatch.is_empty() {
-		panic!(length_mismatch);
+		panic!("{}", length_mismatch);
 	}
 }
 
 benchmarks! {
-	_ { }
-
 	report_offence_im_online {
 		let r in 1 .. MAX_REPORTERS;
 		// we skip 1 offender, because in such case there is no slashing
 		let o in 2 .. MAX_OFFENDERS;
-		let n in 0 .. MAX_NOMINATORS.min(MAX_NOMINATIONS as u32);
+		let n in 0 .. MAX_NOMINATORS.min(<T as pallet_staking::Config>::MAX_NOMINATIONS);
 
 		// Make r reporters
 		let mut reporters = vec![];
@@ -221,7 +250,7 @@ benchmarks! {
 		// make sure reporters actually get rewarded
 		Staking::<T>::set_slash_reward_fraction(Perbill::one());
 
-		let (offenders, raw_offenders) = make_offenders::<T>(o, n)?;
+		let (offenders, raw_offenders) = make_offenders_im_online::<T>(o, n)?;
 		let keys =  ImOnline::<T>::keys();
 		let validator_set_count = keys.len() as u32;
 
@@ -241,8 +270,6 @@ benchmarks! {
 		);
 	}
 	verify {
-		// make sure the report was not deferred
-		assert!(Offences::<T>::deferred_offences().is_empty());
 		let bond_amount: u32 = UniqueSaturatedInto::<u32>::unique_saturated_into(bond_amount::<T>());
 		let slash_amount = slash_fraction * bond_amount;
 		let reward_amount = slash_amount * (1 + n) / 2;
@@ -276,14 +303,13 @@ benchmarks! {
 					pallet_offences::Event::Offence(
 						UnresponsivenessOffence::<T>::ID,
 						0_u32.to_le_bytes().to_vec(),
-						true
 					)
 				).into()))
 		);
 	}
 
 	report_offence_grandpa {
-		let n in 0 .. MAX_NOMINATORS.min(MAX_NOMINATIONS as u32);
+		let n in 0 .. MAX_NOMINATORS.min(<T as pallet_staking::Config>::MAX_NOMINATIONS);
 
 		// for grandpa equivocation reports the number of reporters
 		// and offenders is always 1
@@ -306,8 +332,6 @@ benchmarks! {
 		let _ = Offences::<T>::report_offence(reporters, offence);
 	}
 	verify {
-		// make sure the report was not deferred
-		assert!(Offences::<T>::deferred_offences().is_empty());
 		// make sure that all slashes have been applied
 		assert_eq!(
 			System::<T>::event_count(), 0
@@ -319,7 +343,7 @@ benchmarks! {
 	}
 
 	report_offence_babe {
-		let n in 0 .. MAX_NOMINATORS.min(MAX_NOMINATIONS as u32);
+		let n in 0 .. MAX_NOMINATORS.min(<T as pallet_staking::Config>::MAX_NOMINATIONS);
 
 		// for babe equivocation reports the number of reporters
 		// and offenders is always 1
@@ -332,7 +356,7 @@ benchmarks! {
 		let keys =  ImOnline::<T>::keys();
 
 		let offence = BabeEquivocationOffence {
-			slot: 0,
+			slot: 0u64.into(),
 			session_index: 0,
 			validator_set_count: keys.len() as u32,
 			offender: T::convert(offenders.pop().unwrap()),
@@ -342,8 +366,6 @@ benchmarks! {
 		let _ = Offences::<T>::report_offence(reporters, offence);
 	}
 	verify {
-		// make sure the report was not deferred
-		assert!(Offences::<T>::deferred_offences().is_empty());
 		// make sure that all slashes have been applied
 		assert_eq!(
 			System::<T>::event_count(), 0
@@ -353,59 +375,10 @@ benchmarks! {
 			+ n // nominators slashed
 		);
 	}
-
-	on_initialize {
-		let d in 1 .. MAX_DEFERRED_OFFENCES;
-		let o = 10;
-		let n = 100;
-
-		Staking::<T>::put_election_status(ElectionStatus::Closed);
-
-		let mut deferred_offences = vec![];
-		let offenders = make_offenders::<T>(o, n)?.0;
-		let offence_details = offenders.into_iter()
-			.map(|offender| OffenceDetails {
-				offender: T::convert(offender),
-				reporters: vec![],
-			})
-			.collect::<Vec<_>>();
-
-		for i in 0 .. d {
-			let fractions = offence_details.iter()
-				.map(|_| Perbill::from_percent(100 * (i + 1) / MAX_DEFERRED_OFFENCES))
-				.collect::<Vec<_>>();
-			deferred_offences.push((offence_details.clone(), fractions.clone(), 0u32));
-		}
-
-		Offences::<T>::set_deferred_offences(deferred_offences);
-		assert!(!Offences::<T>::deferred_offences().is_empty());
-	}: {
-		Offences::<T>::on_initialize(0u32.into());
-	}
-	verify {
-		// make sure that all deferred offences were reported with Ok status.
-		assert!(Offences::<T>::deferred_offences().is_empty());
-		assert_eq!(
-			System::<T>::event_count(), d * (0
-			+ o // offenders slashed
-			+ o * n // nominators slashed
-		));
-	}
 }
 
-#[cfg(test)]
-mod tests {
-	use super::*;
-	use crate::mock::{new_test_ext, Test};
-	use frame_support::assert_ok;
-
-	#[test]
-	fn test_benchmarks() {
-		new_test_ext().execute_with(|| {
-			assert_ok!(test_benchmark_report_offence_im_online::<Test>());
-			assert_ok!(test_benchmark_report_offence_grandpa::<Test>());
-			assert_ok!(test_benchmark_report_offence_babe::<Test>());
-			assert_ok!(test_benchmark_on_initialize::<Test>());
-		});
-	}
-}
+impl_benchmark_test_suite!(
+	Pallet,
+	crate::mock::new_test_ext(),
+	crate::mock::Test,
+);

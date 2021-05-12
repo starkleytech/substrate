@@ -1,18 +1,20 @@
-// Copyright 2019 Parity Technologies (UK) Ltd.
 // This file is part of Substrate.
 
-// Substrate is free software: you can redistribute it and/or modify
+// Copyright (C) 2019-2021 Parity Technologies (UK) Ltd.
+// SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
+
+// This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Substrate is distributed in the hope that it will be useful,
+// This program is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Substrate.  If not, see <http://www.gnu.org/licenses/>.
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 //! Block sealing utilities
 
@@ -31,14 +33,14 @@ use sp_consensus::{
 use sp_blockchain::HeaderBackend;
 use std::collections::HashMap;
 use std::time::Duration;
-use sp_inherents::InherentDataProviders;
+use sp_inherents::{CreateInherentDataProviders, InherentDataProvider};
 use sp_api::{ProvideRuntimeApi, TransactionFor};
 
 /// max duration for creating a proposal in secs
 pub const MAX_PROPOSAL_DURATION: u64 = 10;
 
 /// params for sealing a new block
-pub struct SealBlockParams<'a, B: BlockT, BI, SC, C: ProvideRuntimeApi<B>, E, P: txpool::ChainApi> {
+pub struct SealBlockParams<'a, B: BlockT, BI, SC, C: ProvideRuntimeApi<B>, E, P: txpool::ChainApi, CIDP> {
 	/// if true, empty blocks(without extrinsics) will be created.
 	/// otherwise, will return Error::EmptyTransactionPool.
 	pub create_empty: bool,
@@ -60,12 +62,12 @@ pub struct SealBlockParams<'a, B: BlockT, BI, SC, C: ProvideRuntimeApi<B>, E, P:
 	pub consensus_data_provider: Option<&'a dyn ConsensusDataProvider<B, Transaction = TransactionFor<C, B>>>,
 	/// block import object
 	pub block_import: &'a mut BI,
-	/// inherent data provider
-	pub inherent_data_provider: &'a InherentDataProviders,
+	/// Something that can create the inherent data providers.
+	pub create_inherent_data_providers: &'a CIDP,
 }
 
 /// seals a new block with the given params
-pub async fn seal_block<B, BI, SC, C, E, P>(
+pub async fn seal_block<B, BI, SC, C, E, P, CIDP>(
 	SealBlockParams {
 		create_empty,
 		finalize,
@@ -75,11 +77,10 @@ pub async fn seal_block<B, BI, SC, C, E, P>(
 		select_chain,
 		block_import,
 		env,
-		inherent_data_provider,
+		create_inherent_data_providers,
 		consensus_data_provider: digest_provider,
 		mut sender,
-		..
-	}: SealBlockParams<'_, B, BI, SC, C, E, P>
+	}: SealBlockParams<'_, B, BI, SC, C, E, P, CIDP>
 )
 	where
 		B: BlockT,
@@ -91,6 +92,7 @@ pub async fn seal_block<B, BI, SC, C, E, P>(
 		P: txpool::ChainApi<Block=B>,
 		SC: SelectChain<B>,
 		TransactionFor<C, B>: 'static,
+		CIDP: CreateInherentDataProviders<B, ()>,
 {
 	let future = async {
 		if pool.validated_pool().status().ready == 0 && !create_empty {
@@ -102,27 +104,38 @@ pub async fn seal_block<B, BI, SC, C, E, P>(
 		// or fetch the best_block.
 		let parent = match parent_hash {
 			Some(hash) => {
-				match client.header(BlockId::Hash(hash))? {
-					Some(header) => header,
-					None => return Err(Error::BlockNotFound(format!("{}", hash))),
-				}
+				client.header(BlockId::Hash(hash))?.ok_or_else(|| Error::BlockNotFound(format!("{}", hash)))?
 			}
 			None => select_chain.best_chain()?
 		};
 
+		let inherent_data_providers =
+			create_inherent_data_providers
+				.create_inherent_data_providers(
+					parent.hash(),
+					(),
+				)
+				.await
+				.map_err(|e| Error::Other(e))?;
+
+		let inherent_data = inherent_data_providers.create_inherent_data()?;
+
 		let proposer = env.init(&parent)
 			.map_err(|err| Error::StringError(format!("{:?}", err))).await?;
-		let id = inherent_data_provider.create_inherent_data()?;
-		let inherents_len = id.len();
+		let inherents_len = inherent_data.len();
 
 		let digest = if let Some(digest_provider) = digest_provider {
-			digest_provider.create_digest(&parent, &id)?
+			digest_provider.create_digest(&parent, &inherent_data)?
 		} else {
 			Default::default()
 		};
 
-		let proposal = proposer.propose(id.clone(), digest, Duration::from_secs(MAX_PROPOSAL_DURATION), false.into())
-			.map_err(|err| Error::StringError(format!("{:?}", err))).await?;
+		let proposal = proposer.propose(
+			inherent_data.clone(),
+			digest,
+			Duration::from_secs(MAX_PROPOSAL_DURATION),
+			None,
+		).map_err(|err| Error::StringError(format!("{:?}", err))).await?;
 
 		if proposal.block.extrinsics().len() == inherents_len && !create_empty {
 			return Err(Error::EmptyTransactionPool)
@@ -136,10 +149,10 @@ pub async fn seal_block<B, BI, SC, C, E, P>(
 		params.storage_changes = Some(proposal.storage_changes);
 
 		if let Some(digest_provider) = digest_provider {
-			digest_provider.append_block_import(&parent, &mut params, &id)?;
+			digest_provider.append_block_import(&parent, &mut params, &inherent_data)?;
 		}
 
-		match block_import.import_block(params, HashMap::new())? {
+		match block_import.import_block(params, HashMap::new()).await? {
 			ImportResult::Imported(aux) => {
 				Ok(CreatedBlock { hash: <B as BlockT>::Header::hash(&header), aux })
 			},

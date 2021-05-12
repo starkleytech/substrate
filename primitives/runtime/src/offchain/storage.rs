@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2020-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -104,7 +104,7 @@ mod tests {
 	use super::*;
 	use sp_io::TestExternalities;
 	use sp_core::offchain::{
-		OffchainExt,
+		OffchainDbExt,
 		testing,
 	};
 
@@ -112,7 +112,7 @@ mod tests {
 	fn should_set_and_get() {
 		let (offchain, state) = testing::TestOffchainExt::new();
 		let mut t = TestExternalities::default();
-		t.register_extension(OffchainExt::new(offchain));
+		t.register_extension(OffchainDbExt::new(offchain));
 
 		t.execute_with(|| {
 			let val = StorageValue::persistent(b"testval");
@@ -134,7 +134,7 @@ mod tests {
 	fn should_mutate() {
 		let (offchain, state) = testing::TestOffchainExt::new();
 		let mut t = TestExternalities::default();
-		t.register_extension(OffchainExt::new(offchain));
+		t.register_extension(OffchainDbExt::new(offchain));
 
 		t.execute_with(|| {
 			let val = StorageValue::persistent(b"testval");

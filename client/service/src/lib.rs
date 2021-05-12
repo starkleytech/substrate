@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -39,7 +39,6 @@ use std::net::SocketAddr;
 use std::collections::HashMap;
 use std::time::Duration;
 use std::task::Poll;
-use parking_lot::Mutex;
 
 use futures::{Future, FutureExt, Stream, StreamExt, stream, compat::*};
 use sc_network::{NetworkStatus, network_state::NetworkState, PeerId};
@@ -48,11 +47,11 @@ use codec::{Encode, Decode};
 use sp_runtime::generic::BlockId;
 use sp_runtime::traits::{Block as BlockT, Header as HeaderT};
 use parity_util_mem::MallocSizeOf;
-use sp_utils::{status_sinks, mpsc::{tracing_unbounded, TracingUnboundedReceiver,  TracingUnboundedSender}};
+use sp_utils::{status_sinks, mpsc::{tracing_unbounded, TracingUnboundedReceiver}};
 
 pub use self::error::Error;
 pub use self::builder::{
-	new_full_client, new_client, new_full_parts, new_light_parts,
+	new_full_client, new_db_backend, new_client, new_full_parts, new_light_parts,
 	spawn_tasks, build_network, build_offchain_workers,
 	BuildNetworkParams, KeystoreContainer, NetworkStarter, SpawnTasksParams, TFullClient, TLightClient,
 	TFullBackend, TLightBackend, TLightBackendWithHash, TLightClientWithBackend,
@@ -60,6 +59,7 @@ pub use self::builder::{
 };
 pub use config::{
 	BasePath, Configuration, DatabaseConfig, PruningMode, Role, RpcMethods, TaskExecutor, TaskType,
+	KeepBlocks, TransactionStorageMode,
 };
 pub use sc_chain_spec::{
 	ChainSpec, GenericChainSpec, Properties, RuntimeGenesis, Extension as ChainSpecExtension,
@@ -160,20 +160,7 @@ impl<Block: BlockT> NetworkStatusSinks<Block> {
 
 }
 
-/// Sinks to propagate telemetry connection established events.
-#[derive(Default, Clone)]
-pub struct TelemetryConnectionSinks(Arc<Mutex<Vec<TracingUnboundedSender<()>>>>);
-
-impl TelemetryConnectionSinks {
-	/// Get event stream for telemetry connection established events.
-	pub fn on_connect_stream(&self) -> TracingUnboundedReceiver<()> {
-		let (sink, stream) =tracing_unbounded("mpsc_telemetry_on_connect");
-		self.0.lock().push(sink);
-		stream
-	}
-}
-
-/// An imcomplete set of chain components, but enough to run the chain ops subcommands.
+/// An incomplete set of chain components, but enough to run the chain ops subcommands.
 pub struct PartialComponents<Client, Backend, SelectChain, ImportQueue, TransactionPool, Other> {
 	/// A shared client instance.
 	pub client: Arc<Client>,
@@ -189,8 +176,6 @@ pub struct PartialComponents<Client, Backend, SelectChain, ImportQueue, Transact
 	pub import_queue: ImportQueue,
 	/// A shared transaction pool.
 	pub transaction_pool: Arc<TransactionPool>,
-	/// A registry of all providers of `InherentData`.
-	pub inherent_data_providers: sp_inherents::InherentDataProviders,
 	/// Everything else that needs to be passed into the main build function.
 	pub other: Other,
 }
@@ -247,7 +232,7 @@ async fn build_network_future<
 				};
 
 				if announce_imported_blocks {
-					network.service().announce_block(notification.hash, Vec::new());
+					network.service().announce_block(notification.hash, None);
 				}
 
 				if notification.is_new_best {
@@ -315,6 +300,14 @@ async fn build_network_future<
 							))),
 						};
 					}
+					sc_rpc::system::Request::NetworkReservedPeers(sender) => {
+						let reserved_peers = network.reserved_peers();
+						let reserved_peers = reserved_peers
+							.map(|peer_id| peer_id.to_base58())
+							.collect();
+
+						let _ = sender.send(reserved_peers);
+					}
 					sc_rpc::system::Request::NodeRoles(sender) => {
 						use sc_rpc::system::NodeRole;
 
@@ -322,7 +315,6 @@ async fn build_network_future<
 							Role::Authority { .. } => NodeRole::Authority,
 							Role::Light => NodeRole::LightClient,
 							Role::Full => NodeRole::Full,
-							Role::Sentry { .. } => NodeRole::Sentry,
 						};
 
 						let _ = sender.send(vec![node_role]);
@@ -405,9 +397,8 @@ fn start_rpc_servers<
 ) -> Result<Box<dyn std::any::Any + Send + Sync>, error::Error> {
 	fn maybe_start_server<T, F>(address: Option<SocketAddr>, mut start: F) -> Result<Option<T>, io::Error>
 		where F: FnMut(&SocketAddr) -> Result<T, io::Error>,
-	{
-		Ok(match address {
-			Some(mut address) => Some(start(&address)
+		{
+			address.map(|mut address| start(&address)
 				.or_else(|e| match e.kind() {
 					io::ErrorKind::AddrInUse |
 					io::ErrorKind::PermissionDenied => {
@@ -416,10 +407,9 @@ fn start_rpc_servers<
 						start(&address)
 					},
 					_ => Err(e),
-				})?),
-			None => None,
-		})
-	}
+				}
+			) ).transpose()
+		}
 
 	fn deny_unsafe(addr: &SocketAddr, methods: &RpcMethods) -> sc_rpc::DenyUnsafe {
 		let is_exposed_addr = !addr.ip().is_loopback();
@@ -612,6 +602,7 @@ mod tests {
 		let spawner = sp_core::testing::TaskExecutor::new();
 		let pool = BasicPool::new_full(
 			Default::default(),
+			true.into(),
 			None,
 			spawner,
 			client.clone(),

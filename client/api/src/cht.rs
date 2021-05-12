@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -22,7 +22,7 @@
 //! One is generated for every `SIZE` blocks, allowing us to discard those blocks in
 //! favor of the trie root. When the "ancient" blocks need to be accessed, we simply
 //! request an inclusion proof of a specific block number against the trie with the
-//! root has. A correct proof implies that the claimed block is identical to the one
+//! root hash. A correct proof implies that the claimed block is identical to the one
 //! we discarded.
 
 use hash_db;
@@ -218,12 +218,9 @@ pub fn for_each_cht_group<Header, I, F, P>(
 	let mut current_cht_num = None;
 	let mut current_cht_blocks = Vec::new();
 	for block in blocks {
-		let new_cht_num = match block_to_cht_number(cht_size, block) {
-			Some(new_cht_num) => new_cht_num,
-			None => return Err(ClientError::Backend(format!(
-				"Cannot compute CHT root for the block #{}", block)).into()
-			),
-		};
+		let new_cht_num = block_to_cht_number(cht_size, block).ok_or_else(|| ClientError::Backend(format!(
+				"Cannot compute CHT root for the block #{}", block))
+			)?;
 
 		let advance_to_next_cht = current_cht_num.is_some() && current_cht_num != Some(new_cht_num);
 		if advance_to_next_cht {

@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2019-2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2019-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,14 +17,15 @@
 
 //! Tests for npos-elections.
 
-use crate::mock::*;
 use crate::{
-	seq_phragmen, balancing, build_support_map, is_score_better, helpers::*,
-	Support, StakedAssignment, Assignment, ElectionResult, ExtendedBalance, setup_inputs,
-	seq_phragmen_core, Voter,
+	balancing, helpers::*, is_score_better, mock::*, seq_phragmen, seq_phragmen_core, setup_inputs,
+	to_support_map, to_supports, Assignment, CompactSolution, ElectionResult, ExtendedBalance,
+	IndexAssignment, StakedAssignment, Support, Voter, EvaluateSupport,
 };
+use rand::{self, SeedableRng};
+use sp_arithmetic::{PerU16, Perbill, Percent, Permill};
 use substrate_test_utils::assert_eq_uvec;
-use sp_arithmetic::{Perbill, Permill, Percent, PerU16};
+use std::convert::TryInto;
 
 #[test]
 fn float_phragmen_poc_works() {
@@ -53,22 +54,22 @@ fn float_phragmen_poc_works() {
 
 	assert_eq!(
 		support_map.get(&2).unwrap(),
-		&_Support { own: 0.0, total: 25.0, others: vec![(10u64, 10.0), (30u64, 15.0)]}
+		&_Support { own: 0.0, total: 25.0, others: vec![(10u64, 10.0), (30u64, 15.0)] }
 	);
 	assert_eq!(
 		support_map.get(&3).unwrap(),
-		&_Support { own: 0.0, total: 35.0, others: vec![(20u64, 20.0), (30u64, 15.0)]}
+		&_Support { own: 0.0, total: 35.0, others: vec![(20u64, 20.0), (30u64, 15.0)] }
 	);
 
 	equalize_float(phragmen_result.assignments, &mut support_map, 0.0, 2, stake_of);
 
 	assert_eq!(
 		support_map.get(&2).unwrap(),
-		&_Support { own: 0.0, total: 30.0, others: vec![(10u64, 10.0), (30u64, 20.0)]}
+		&_Support { own: 0.0, total: 30.0, others: vec![(10u64, 10.0), (30u64, 20.0)] }
 	);
 	assert_eq!(
 		support_map.get(&3).unwrap(),
-		&_Support { own: 0.0, total: 30.0, others: vec![(20u64, 20.0), (30u64, 10.0)]}
+		&_Support { own: 0.0, total: 30.0, others: vec![(20u64, 20.0), (30u64, 10.0)] }
 	);
 }
 
@@ -300,7 +301,7 @@ fn phragmen_poc_works() {
 
 	let staked = assignment_ratio_to_staked(assignments, &stake_of);
 	let winners = to_without_backing(winners);
-	let support_map = build_support_map::<AccountId>(&winners, &staked).unwrap();
+	let support_map = to_support_map::<AccountId>(&winners, &staked).unwrap();
 
 	assert_eq_uvec!(
 		staked,
@@ -374,7 +375,7 @@ fn phragmen_poc_works_with_balancing() {
 
 	let staked = assignment_ratio_to_staked(assignments, &stake_of);
 	let winners = to_without_backing(winners);
-	let support_map = build_support_map::<AccountId>(&winners, &staked).unwrap();
+	let support_map = to_support_map::<AccountId>(&winners, &staked).unwrap();
 
 	assert_eq_uvec!(
 		staked,
@@ -424,10 +425,10 @@ fn phragmen_poc_2_works() {
 		(4, 500),
 	]);
 
-	run_and_compare::<Perbill>(candidates.clone(), voters.clone(), &stake_of, 2);
-	run_and_compare::<Permill>(candidates.clone(), voters.clone(), &stake_of, 2);
-	run_and_compare::<Percent>(candidates.clone(), voters.clone(), &stake_of, 2);
-	run_and_compare::<PerU16>(candidates, voters, &stake_of, 2);
+	run_and_compare::<Perbill, _>(candidates.clone(), voters.clone(), &stake_of, 2);
+	run_and_compare::<Permill, _>(candidates.clone(), voters.clone(), &stake_of, 2);
+	run_and_compare::<Percent, _>(candidates.clone(), voters.clone(), &stake_of, 2);
+	run_and_compare::<PerU16, _>(candidates, voters, &stake_of, 2);
 }
 
 #[test]
@@ -445,10 +446,10 @@ fn phragmen_poc_3_works() {
 		(4, 1000),
 	]);
 
-	run_and_compare::<Perbill>(candidates.clone(), voters.clone(), &stake_of, 2);
-	run_and_compare::<Permill>(candidates.clone(), voters.clone(), &stake_of, 2);
-	run_and_compare::<Percent>(candidates.clone(), voters.clone(), &stake_of, 2);
-	run_and_compare::<PerU16>(candidates, voters, &stake_of, 2);
+	run_and_compare::<Perbill, _>(candidates.clone(), voters.clone(), &stake_of, 2);
+	run_and_compare::<Permill, _>(candidates.clone(), voters.clone(), &stake_of, 2);
+	run_and_compare::<Percent, _>(candidates.clone(), voters.clone(), &stake_of, 2);
+	run_and_compare::<PerU16, _>(candidates, voters, &stake_of, 2);
 }
 
 #[test]
@@ -476,7 +477,7 @@ fn phragmen_accuracy_on_large_scale_only_candidates() {
 
 	assert_eq_uvec!(winners, vec![(1, 18446744073709551614u128), (5, 18446744073709551613u128)]);
 	assert_eq!(assignments.len(), 2);
-	check_assignments_sum(assignments);
+	check_assignments_sum(&assignments);
 }
 
 #[test]
@@ -528,7 +529,7 @@ fn phragmen_accuracy_on_large_scale_voters_and_candidates() {
 		]
 	);
 
-	check_assignments_sum(assignments);
+	check_assignments_sum(&assignments);
 }
 
 #[test]
@@ -550,7 +551,7 @@ fn phragmen_accuracy_on_small_scale_self_vote() {
 	).unwrap();
 
 	assert_eq_uvec!(winners, vec![(20, 2), (10, 1), (30, 1)]);
-	check_assignments_sum(assignments);
+	check_assignments_sum(&assignments);
 }
 
 #[test]
@@ -581,7 +582,7 @@ fn phragmen_accuracy_on_small_scale_no_self_vote() {
 	).unwrap();
 
 	assert_eq_uvec!(winners, vec![(20, 2), (10, 1), (30, 1)]);
-	check_assignments_sum(assignments);
+	check_assignments_sum(&assignments);
 
 }
 
@@ -616,7 +617,7 @@ fn phragmen_large_scale_test() {
 	).unwrap();
 
 	assert_eq_uvec!(to_without_backing(winners.clone()), vec![24, 22]);
-	check_assignments_sum(assignments);
+	check_assignments_sum(&assignments);
 }
 
 #[test]
@@ -664,7 +665,7 @@ fn phragmen_large_scale_test_2() {
 		],
 	);
 
-	check_assignments_sum(assignments);
+	check_assignments_sum(&assignments);
 }
 
 #[test]
@@ -697,7 +698,7 @@ fn phragmen_linear_equalize() {
 		(130, 1000),
 	]);
 
-	run_and_compare::<Perbill>(candidates, voters, &stake_of, 2);
+	run_and_compare::<Perbill, _>(candidates, voters, &stake_of, 2);
 }
 
 #[test]
@@ -766,7 +767,7 @@ fn phragmen_self_votes_should_be_kept() {
 
 	let staked_assignments = assignment_ratio_to_staked(result.assignments, &stake_of);
 	let winners = to_without_backing(result.winners);
-	let supports = build_support_map::<AccountId>(&winners, &staked_assignments).unwrap();
+	let supports = to_support_map::<AccountId>(&winners, &staked_assignments).unwrap();
 
 	assert_eq!(supports.get(&5u64), None);
 	assert_eq!(
@@ -837,6 +838,34 @@ fn duplicate_target_is_ignored_when_winner() {
 			(20, vec![1, 2]),
 		],
 	);
+}
+
+#[test]
+fn support_map_and_vec_can_be_evaluated() {
+	let candidates = vec![1, 2, 3];
+	let voters = vec![(10, vec![1, 2]), (20, vec![1, 3]), (30, vec![2, 3])];
+
+	let stake_of = create_stake_of(&[(10, 10), (20, 20), (30, 30)]);
+	let ElectionResult {
+		winners,
+		assignments,
+	} = seq_phragmen::<_, Perbill>(
+		2,
+		candidates,
+		voters
+			.iter()
+			.map(|(ref v, ref vs)| (v.clone(), stake_of(v), vs.clone()))
+			.collect::<Vec<_>>(),
+		None,
+	)
+	.unwrap();
+
+	let staked = assignment_ratio_to_staked(assignments, &stake_of);
+	let winners = to_without_backing(winners);
+	let support_map = to_support_map::<AccountId>(&winners, &staked).unwrap();
+	let support_vec = to_supports(&winners, &staked).unwrap();
+
+	assert_eq!(support_map.evaluate(), support_vec.evaluate());
 }
 
 mod assignment_convert_normalize {
@@ -1068,7 +1097,7 @@ mod score {
 			is_score_better(
 				claim.clone(),
 				initial.clone(),
-				Perbill::from_rational_approximation(1u32, 10_000),
+				Perbill::from_rational(1u32, 10_000),
 			),
 			true,
 		);
@@ -1077,7 +1106,7 @@ mod score {
 			is_score_better(
 				claim.clone(),
 				initial.clone(),
-				Perbill::from_rational_approximation(2u32, 10_000),
+				Perbill::from_rational(2u32, 10_000),
 			),
 			true,
 		);
@@ -1086,7 +1115,7 @@ mod score {
 			is_score_better(
 				claim.clone(),
 				initial.clone(),
-				Perbill::from_rational_approximation(3u32, 10_000),
+				Perbill::from_rational(3u32, 10_000),
 			),
 			true,
 		);
@@ -1095,7 +1124,7 @@ mod score {
 			is_score_better(
 				claim.clone(),
 				initial.clone(),
-				Perbill::from_rational_approximation(4u32, 10_000),
+				Perbill::from_rational(4u32, 10_000),
 			),
 			true,
 		);
@@ -1104,7 +1133,7 @@ mod score {
 			is_score_better(
 				claim.clone(),
 				initial.clone(),
-				Perbill::from_rational_approximation(5u32, 10_000),
+				Perbill::from_rational(5u32, 10_000),
 			),
 			false,
 		);
@@ -1112,19 +1141,20 @@ mod score {
 }
 
 mod solution_type {
-	use codec::{Decode, Encode};
 	use super::AccountId;
+	use codec::{Decode, Encode};
 	// these need to come from the same dev-dependency `sp-npos-elections`, not from the crate.
-	use crate::{
-		generate_solution_type, Assignment,
-		Error as PhragmenError,
-	};
-	use sp_std::{convert::TryInto, fmt::Debug};
+	use crate::{generate_solution_type, Assignment, CompactSolution, Error as PhragmenError};
 	use sp_arithmetic::Percent;
+	use sp_std::{convert::TryInto, fmt::Debug};
 
 	type TestAccuracy = Percent;
 
-	generate_solution_type!(pub struct TestSolutionCompact::<u32, u8, TestAccuracy>(16));
+	generate_solution_type!(pub struct TestSolutionCompact::<
+		VoterIndex = u32,
+		TargetIndex = u8,
+		Accuracy = TestAccuracy,
+	>(16));
 
 	#[allow(dead_code)]
 	mod __private {
@@ -1134,16 +1164,19 @@ mod solution_type {
 		use sp_arithmetic::Percent;
 		generate_solution_type!(
 			#[compact]
-			struct InnerTestSolutionCompact::<u32, u8, Percent>(12)
+			struct InnerTestSolutionCompact::<VoterIndex = u32, TargetIndex = u8, Accuracy = Percent>(12)
 		);
-
 	}
 
 	#[test]
 	fn solution_struct_works_with_and_without_compact() {
 		// we use u32 size to make sure compact is smaller.
 		let without_compact = {
-			generate_solution_type!(pub struct InnerTestSolution::<u32, u32, Percent>(16));
+			generate_solution_type!(pub struct InnerTestSolution::<
+				VoterIndex = u32,
+				TargetIndex = u32,
+				Accuracy = Percent,
+			>(16));
 			let compact = InnerTestSolution {
 				votes1: vec![(2, 20), (4, 40)],
 				votes2: vec![
@@ -1157,7 +1190,11 @@ mod solution_type {
 		};
 
 		let with_compact = {
-			generate_solution_type!(#[compact] pub struct InnerTestSolutionCompact::<u32, u32, Percent>(16));
+			generate_solution_type!(#[compact] pub struct InnerTestSolutionCompact::<
+				VoterIndex = u32,
+				TargetIndex = u32,
+				Accuracy = Percent,
+			>(16));
 			let compact = InnerTestSolutionCompact {
 				votes1: vec![(2, 20), (4, 40)],
 				votes2: vec![
@@ -1190,7 +1227,7 @@ mod solution_type {
 			compact,
 			Decode::decode(&mut &encoded[..]).unwrap(),
 		);
-		assert_eq!(compact.len(), 4);
+		assert_eq!(compact.voter_count(), 4);
 		assert_eq!(compact.edge_count(), 2 + 4);
 		assert_eq!(compact.unique_targets(), vec![10, 11, 20, 40, 50, 51]);
 	}
@@ -1320,13 +1357,13 @@ mod solution_type {
 		};
 
 		let compacted = TestSolutionCompact::from_assignment(
-			assignments.clone(),
+			&assignments,
 			voter_index,
 			target_index,
 		).unwrap();
 
 		// basically number of assignments that it is encoding.
-		assert_eq!(compacted.len(), assignments.len());
+		assert_eq!(compacted.voter_count(), assignments.len());
 		assert_eq!(
 			compacted.edge_count(),
 			assignments.iter().fold(0, |a, b| a + b.distribution.len()),
@@ -1410,9 +1447,12 @@ mod solution_type {
 			..Default::default()
 		};
 
-		assert_eq!(compact.unique_targets(), vec![1, 2, 3, 4, 7, 8, 11, 12, 13, 66, 67]);
+		assert_eq!(
+			compact.unique_targets(),
+			vec![1, 2, 3, 4, 7, 8, 11, 12, 13, 66, 67]
+		);
 		assert_eq!(compact.edge_count(), 2 + (2 * 2) + 3 + 16);
-		assert_eq!(compact.len(), 6);
+		assert_eq!(compact.voter_count(), 6);
 
 		// this one has some duplicates.
 		let compact = TestSolutionCompact {
@@ -1429,7 +1469,7 @@ mod solution_type {
 
 		assert_eq!(compact.unique_targets(), vec![1, 3, 4, 7, 8, 11, 13]);
 		assert_eq!(compact.edge_count(), 2 + (2 * 2) + 3);
-		assert_eq!(compact.len(), 5);
+		assert_eq!(compact.voter_count(), 5);
 	}
 
 	#[test]
@@ -1480,7 +1520,7 @@ mod solution_type {
 		];
 
 		let compacted = TestSolutionCompact::from_assignment(
-			assignments.clone(),
+			&assignments,
 			voter_index,
 			target_index,
 		);
@@ -1511,7 +1551,7 @@ mod solution_type {
 		};
 
 		let compacted = TestSolutionCompact::from_assignment(
-			assignments.clone(),
+			&assignments,
 			voter_index,
 			target_index,
 		).unwrap();
@@ -1525,4 +1565,25 @@ mod solution_type {
 			}
 		);
 	}
+}
+
+#[test]
+fn index_assignments_generate_same_compact_as_plain_assignments() {
+	let rng = rand::rngs::SmallRng::seed_from_u64(0);
+
+	let (voters, assignments, candidates) = generate_random_votes(1000, 2500, rng);
+	let voter_index = make_voter_fn(&voters);
+	let target_index = make_target_fn(&candidates);
+
+	let compact = Compact::from_assignment(&assignments, &voter_index, &target_index).unwrap();
+
+	let index_assignments = assignments
+		.into_iter()
+		.map(|assignment| IndexAssignment::new(&assignment, &voter_index, &target_index))
+		.collect::<Result<Vec<_>, _>>()
+		.unwrap();
+
+	let index_compact = index_assignments.as_slice().try_into().unwrap();
+
+	assert_eq!(compact, index_compact);
 }

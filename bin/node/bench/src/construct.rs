@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2020-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -48,7 +48,8 @@ use sp_transaction_pool::{
 	TransactionStatusStreamFor,
 	TxHash,
 };
-use sp_consensus::{Environment, Proposer, RecordProof};
+use sp_consensus::{Environment, Proposer};
+use sp_inherents::InherentDataProvider;
 
 use crate::{
 	common::SizeType,
@@ -151,11 +152,9 @@ impl core::Benchmark for ConstructionBenchmark {
 			context.client.clone(),
 			self.transactions.clone().into(),
 			None,
+			None,
 		);
-		let inherent_data_providers = sp_inherents::InherentDataProviders::new();
-		inherent_data_providers
-			.register_provider(sp_timestamp::InherentDataProvider)
-			.expect("Failed to register timestamp data provider");
+		let timestamp_provider = sp_timestamp::InherentDataProvider::from_system_time();
 
 		let start = std::time::Instant::now();
 
@@ -167,10 +166,10 @@ impl core::Benchmark for ConstructionBenchmark {
 
 		let _block = futures::executor::block_on(
 			proposer.propose(
-				inherent_data_providers.create_inherent_data().expect("Create inherent data failed"),
+				timestamp_provider.create_inherent_data().expect("Create inherent data failed"),
 				Default::default(),
 				std::time::Duration::from_secs(20),
-				RecordProof::Yes,
+				None,
 			),
 		).map(|r| r.block).expect("Proposing failed");
 

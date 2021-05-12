@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2020-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -89,6 +89,10 @@ pub struct StorageDef {
 	pub query_kind: Option<QueryKind>,
 	/// Where clause of type definition.
 	pub where_clause: Option<syn::WhereClause>,
+	/// The span of the pallet::storage attribute.
+	pub attr_span: proc_macro2::Span,
+	/// The `cfg` attributes.
+	pub cfg_attrs: Vec<syn::Attribute>,
 }
 
 /// In `Foo<A, B, C>` retrieve the argument at given position, i.e. A is argument at position 0.
@@ -112,19 +116,25 @@ fn retrieve_arg(
 }
 
 impl StorageDef {
-	pub fn try_from(index: usize, item: &mut syn::Item) -> syn::Result<Self> {
+	pub fn try_from(
+		attr_span: proc_macro2::Span,
+		index: usize,
+		item: &mut syn::Item,
+	) -> syn::Result<Self> {
 		let item = if let syn::Item::Type(item) = item {
 			item
 		} else {
 			return Err(syn::Error::new(item.span(), "Invalid pallet::storage, expected item type"));
 		};
 
-		let mut attrs: Vec<PalletStorageAttr> = helper::take_item_attrs(&mut item.attrs)?;
+		let mut attrs: Vec<PalletStorageAttr> = helper::take_item_pallet_attrs(&mut item.attrs)?;
 		if attrs.len() > 1 {
 			let msg = "Invalid pallet::storage, multiple argument pallet::getter found";
 			return Err(syn::Error::new(attrs[1].getter.span(), msg));
 		}
 		let getter = attrs.pop().map(|attr| attr.getter);
+
+		let cfg_attrs = helper::get_item_cfg_attrs(&item.attrs);
 
 		let mut instances = vec![];
 		instances.push(helper::check_type_def_gen(&item.generics, item.ident.span())?);
@@ -167,7 +177,7 @@ impl StorageDef {
 					value: retrieve_arg(&typ.path.segments[0], 5)?,
 				}
 			}
-			found @ _ => {
+			found => {
 				let msg = format!(
 					"Invalid pallet::storage, expected ident: `StorageValue` or \
 					`StorageMap` or `StorageDoubleMap` in order to expand metadata, found \
@@ -207,6 +217,7 @@ impl StorageDef {
 			})?;
 
 		Ok(StorageDef {
+			attr_span,
 			index,
 			vis: item.vis.clone(),
 			ident: item.ident.clone(),
@@ -216,6 +227,7 @@ impl StorageDef {
 			getter,
 			query_kind,
 			where_clause,
+			cfg_attrs,
 		})
 	}
 }

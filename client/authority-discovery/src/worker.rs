@@ -1,18 +1,20 @@
-// Copyright 2020 Parity Technologies (UK) Ltd.
 // This file is part of Substrate.
 
-// Substrate is free software: you can redistribute it and/or modify
+// Copyright (C) 2020-2021 Parity Technologies (UK) Ltd.
+// SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
+
+// This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 
-// Substrate is distributed in the hope that it will be useful,
+// This program is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU General Public License for more details.
 
 // You should have received a copy of the GNU General Public License
-// along with Substrate.  If not, see <http://www.gnu.org/licenses/>.
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{error::{Error, Result}, interval::ExpIncInterval, ServicetoWorkerMsg};
 
@@ -23,11 +25,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::channel::mpsc;
-use futures::{FutureExt, Stream, StreamExt, stream::Fuse};
+use futures::{future, FutureExt, Stream, StreamExt, stream::Fuse};
 
 use addr_cache::AddrCache;
 use async_trait::async_trait;
 use codec::Decode;
+use ip_network::IpNetwork;
 use libp2p::{core::multiaddr, multihash::{Multihash, Hasher}};
 use log::{debug, error, log_enabled};
 use prometheus_endpoint::{Counter, CounterVec, Gauge, Opts, U64, register};
@@ -42,7 +45,7 @@ use sc_network::{
 	PeerId,
 };
 use sp_authority_discovery::{AuthorityDiscoveryApi, AuthorityId, AuthoritySignature, AuthorityPair};
-use sp_core::crypto::{key_types, Pair};
+use sp_core::crypto::{key_types, CryptoTypePublicPair, Pair};
 use sp_keystore::CryptoStore;
 use sp_runtime::{traits::Block as BlockT, generic::BlockId};
 use sp_api::ProvideRuntimeApi;
@@ -54,10 +57,6 @@ mod schema { include!(concat!(env!("OUT_DIR"), "/authority_discovery.rs")); }
 pub mod tests;
 
 const LOG_TARGET: &'static str = "sub-authority-discovery";
-
-/// Name of the Substrate peerset priority group for authorities discovered through the authority
-/// discovery module.
-const AUTHORITIES_PRIORITY_GROUP_NAME: &'static str = "authorities";
 
 /// Maximum number of addresses cached per authority. Additional addresses are discarded.
 const MAX_ADDRESSES_PER_AUTHORITY: usize = 10;
@@ -111,11 +110,17 @@ pub struct Worker<Client, Network, Block, DhtEventStream> {
 
 	/// Interval to be proactive, publishing own addresses.
 	publish_interval: ExpIncInterval,
+	/// Pro-actively publish our own addresses at this interval, if the keys in the keystore
+	/// have changed.
+	publish_if_changed_interval: ExpIncInterval,
+	/// List of keys onto which addresses have been published at the latest publication.
+	/// Used to check whether they have changed.
+	latest_published_keys: HashSet<CryptoTypePublicPair>,
+	/// Same value as in the configuration.
+	publish_non_global_ips: bool,
+
 	/// Interval at which to request addresses of authorities, refilling the pending lookups queue.
 	query_interval: ExpIncInterval,
-	/// Interval on which to set the peerset priority group to a new random
-	/// set of addresses.
-	priority_group_set_interval: ExpIncInterval,
 
 	/// Queue of throttled lookups pending to be passed to the network.
 	pending_lookups: Vec<AuthorityId>,
@@ -137,7 +142,7 @@ where
 	Network: NetworkProvider,
 	Client: ProvideRuntimeApi<Block> + Send + Sync + 'static + HeaderBackend<Block>,
 	<Client as ProvideRuntimeApi<Block>>::Api:
-		AuthorityDiscoveryApi<Block, Error = sp_blockchain::Error>,
+		AuthorityDiscoveryApi<Block>,
 	DhtEventStream: Stream<Item = DhtEvent> + Unpin,
 {
 	/// Construct a [`Worker`].
@@ -164,12 +169,12 @@ where
 			Duration::from_secs(2),
 			config.max_query_interval,
 		);
-		let priority_group_set_interval = ExpIncInterval::new(
-			Duration::from_secs(2),
-			// Trade-off between node connection churn and connectivity. Using half of
-			// [`crate::WorkerConfig::max_query_interval`] to update priority group once at the
-			// beginning and once in the middle of each query interval.
-			config.max_query_interval / 2,
+
+		// An `ExpIncInterval` is overkill here because the interval is constant, but consistency
+		// is more simple.
+		let publish_if_changed_interval = ExpIncInterval::new(
+			config.keystore_refresh_interval,
+			config.keystore_refresh_interval
 		);
 
 		let addr_cache = AddrCache::new();
@@ -193,8 +198,10 @@ where
 			network,
 			dht_event_rx,
 			publish_interval,
+			publish_if_changed_interval,
+			latest_published_keys: HashSet::new(),
+			publish_non_global_ips: config.publish_non_global_ips,
 			query_interval,
-			priority_group_set_interval,
 			pending_lookups: Vec::new(),
 			in_flight_lookups: HashMap::new(),
 			addr_cache,
@@ -224,18 +231,12 @@ where
 				msg = self.from_service.select_next_some() => {
 					self.process_message_from_service(msg);
 				},
-				// Set peerset priority group to a new random set of addresses.
-				_ = self.priority_group_set_interval.next().fuse() => {
-					if let Err(e) = self.set_priority_group().await {
-						error!(
-							target: LOG_TARGET,
-							"Failed to set priority group: {:?}", e,
-						);
-					}
-				},
 				// Publish own addresses.
-				_ = self.publish_interval.next().fuse() => {
-					if let Err(e) = self.publish_ext_addresses().await {
+				only_if_changed = future::select(
+					self.publish_interval.next().map(|_| false),
+					self.publish_if_changed_interval.next().map(|_| true)
+				).map(|e| e.factor_first().0).fuse() => {
+					if let Err(e) = self.publish_ext_addresses(only_if_changed).await {
 						error!(
 							target: LOG_TARGET,
 							"Failed to publish external addresses: {:?}", e,
@@ -270,10 +271,24 @@ where
 		}
 	}
 
-	fn addresses_to_publish(&self) -> impl ExactSizeIterator<Item = Multiaddr> {
+	fn addresses_to_publish(&self) -> impl Iterator<Item = Multiaddr> {
 		let peer_id: Multihash = self.network.local_peer_id().into();
+		let publish_non_global_ips = self.publish_non_global_ips;
 		self.network.external_addresses()
 			.into_iter()
+			.filter(move |a| {
+				if publish_non_global_ips {
+					return true;
+				}
+
+				a.iter().all(|p| match p {
+					// The `ip_network` library is used because its `is_global()` method is stable,
+					// while `is_global()` in the standard library currently isn't.
+					multiaddr::Protocol::Ip4(ip) if !IpNetwork::from(ip).is_global() => false,
+					multiaddr::Protocol::Ip6(ip) if !IpNetwork::from(ip).is_global() => false,
+					_ => true,
+				})
+			})
 			.map(move |a| {
 				if a.iter().any(|p| matches!(p, multiaddr::Protocol::P2p(_))) {
 					a
@@ -284,13 +299,25 @@ where
 	}
 
 	/// Publish own public addresses.
-	async fn publish_ext_addresses(&mut self) -> Result<()> {
+	///
+	/// If `only_if_changed` is true, the function has no effect if the list of keys to publish
+	/// is equal to `self.latest_published_keys`.
+	async fn publish_ext_addresses(&mut self, only_if_changed: bool) -> Result<()> {
 		let key_store = match &self.role {
 			Role::PublishAndDiscover(key_store) => key_store,
 			Role::Discover => return Ok(()),
 		};
 
-		let addresses = self.addresses_to_publish();
+		let keys = Worker::<Client, Network, Block, DhtEventStream>::get_own_public_keys_within_authority_set(
+			key_store.clone(),
+			self.client.as_ref(),
+		).await?.into_iter().map(Into::into).collect::<HashSet<_>>();
+
+		if only_if_changed && keys == self.latest_published_keys {
+			return Ok(())
+		}
+
+		let addresses = self.addresses_to_publish().map(|a| a.to_vec()).collect::<Vec<_>>();
 
 		if let Some(metrics) = &self.metrics {
 			metrics.publish.inc();
@@ -300,28 +327,24 @@ where
 		}
 
 		let mut serialized_addresses = vec![];
-		schema::AuthorityAddresses { addresses: addresses.map(|a| a.to_vec()).collect() }
+		schema::AuthorityAddresses { addresses }
 			.encode(&mut serialized_addresses)
 			.map_err(Error::EncodingProto)?;
 
-		let keys = Worker::<Client, Network, Block, DhtEventStream>::get_own_public_keys_within_authority_set(
-			key_store.clone(),
-			self.client.as_ref(),
-		).await?.into_iter().map(Into::into).collect::<Vec<_>>();
-
+		let keys_vec = keys.iter().cloned().collect::<Vec<_>>();
 		let signatures = key_store.sign_with_all(
 			key_types::AUTHORITY_DISCOVERY,
-			keys.clone(),
+			keys_vec.clone(),
 			serialized_addresses.as_slice(),
 		).await.map_err(|_| Error::Signing)?;
 
-		for (sign_result, key) in signatures.into_iter().zip(keys) {
+		for (sign_result, key) in signatures.into_iter().zip(keys_vec.iter()) {
 			let mut signed_addresses = vec![];
 
-			// sign_with_all returns Result<Signature, Error> signature
-			// is generated for a public key that is supported.
 			// Verify that all signatures exist for all provided keys.
-			let signature = sign_result.map_err(|_| Error::MissingSignature(key.clone()))?;
+			let signature = sign_result.ok()
+				.flatten()
+				.ok_or_else(|| Error::MissingSignature(key.clone()))?;
 			schema::SignedAuthorityAddresses {
 				addresses: serialized_addresses.clone(),
 				signature,
@@ -334,6 +357,8 @@ where
 				signed_addresses,
 			);
 		}
+
+		self.latest_published_keys = keys;
 
 		Ok(())
 	}
@@ -354,7 +379,7 @@ where
 			.client
 			.runtime_api()
 			.authorities(&id)
-			.map_err(Error::CallingRuntime)?
+			.map_err(|e| Error::CallingRuntime(e.into()))?
 			.into_iter()
 			.filter(|id| !local_keys.contains(id.as_ref()))
 			.collect();
@@ -568,7 +593,7 @@ where
 		let id = BlockId::hash(client.info().best_hash);
 		let authorities = client.runtime_api()
 			.authorities(&id)
-			.map_err(Error::CallingRuntime)?
+			.map_err(|e| Error::CallingRuntime(e.into()))?
 			.into_iter()
 			.map(std::convert::Into::into)
 			.collect::<HashSet<_>>();
@@ -580,38 +605,6 @@ where
 
 		Ok(intersection)
 	}
-
-	/// Set the peer set 'authority' priority group to a new random set of
-	/// [`Multiaddr`]s.
-	async fn set_priority_group(&self) -> Result<()> {
-		let addresses = self.addr_cache.get_random_subset();
-
-		if addresses.is_empty() {
-			debug!(
-				target: LOG_TARGET,
-				"Got no addresses in cache for peerset priority group.",
-			);
-			return Ok(());
-		}
-
-		if let Some(metrics) = &self.metrics {
-			metrics.priority_group_size.set(addresses.len().try_into().unwrap_or(std::u64::MAX));
-		}
-
-		debug!(
-			target: LOG_TARGET,
-			"Applying priority group {:?} to peerset.", addresses,
-		);
-
-		self.network
-			.set_priority_group(
-				AUTHORITIES_PRIORITY_GROUP_NAME.to_string(),
-				addresses.into_iter().collect(),
-			).await
-			.map_err(Error::SettingPeersetPriorityGroup)?;
-
-		Ok(())
-	}
 }
 
 /// NetworkProvider provides [`Worker`] with all necessary hooks into the
@@ -619,13 +612,6 @@ where
 /// [`sc_network::NetworkService`] directly is necessary to unit test [`Worker`].
 #[async_trait]
 pub trait NetworkProvider: NetworkStateInfo {
-	/// Modify a peerset priority group.
-	async fn set_priority_group(
-		&self,
-		group_id: String,
-		peers: HashSet<libp2p::Multiaddr>,
-	) -> std::result::Result<(), String>;
-
 	/// Start putting a value in the Dht.
 	fn put_value(&self, key: libp2p::kad::record::Key, value: Vec<u8>);
 
@@ -639,13 +625,6 @@ where
 	B: BlockT + 'static,
 	H: ExHashT,
 {
-	async fn set_priority_group(
-		&self,
-		group_id: String,
-		peers: HashSet<libp2p::Multiaddr>,
-	) -> std::result::Result<(), String> {
-		self.set_priority_group(group_id, peers).await
-	}
 	fn put_value(&self, key: libp2p::kad::record::Key, value: Vec<u8>) {
 		self.put_value(key, value)
 	}
@@ -668,7 +647,6 @@ pub(crate) struct Metrics {
 	dht_event_received: CounterVec<U64>,
 	handle_value_found_event_failure: Counter<U64>,
 	known_authorities_count: Gauge<U64>,
-	priority_group_size: Gauge<U64>,
 }
 
 impl Metrics {
@@ -725,13 +703,6 @@ impl Metrics {
 				Gauge::new(
 					"authority_discovery_known_authorities_count",
 					"Number of authorities known by authority discovery."
-				)?,
-				registry,
-			)?,
-			priority_group_size: register(
-				Gauge::new(
-					"authority_discovery_priority_group_size",
-					"Number of addresses passed to the peer set as a priority group."
 				)?,
 				registry,
 			)?,

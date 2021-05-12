@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2017-2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2017-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -28,7 +28,7 @@ use log::error;
 use pubsub::PubSubMetadata;
 
 /// Maximal payload accepted by RPC servers.
-const MAX_PAYLOAD: usize = 15 * 1024 * 1024;
+pub const MAX_PAYLOAD: usize = 15 * 1024 * 1024;
 
 /// Default maximum number of connections for WS RPC servers.
 const WS_MAX_CONNECTIONS: usize = 100;

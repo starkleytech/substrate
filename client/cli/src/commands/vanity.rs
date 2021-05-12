@@ -1,6 +1,6 @@
 // This file is part of Substrate.
 
-// Copyright (C) 2018-2020 Parity Technologies (UK) Ltd.
+// Copyright (C) 2018-2021 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Classpath-exception-2.0
 
 // This program is free software: you can redistribute it and/or modify
@@ -29,7 +29,7 @@ use sp_runtime::traits::IdentifyAccount;
 use utils::print_from_uri;
 
 /// The `vanity` command
-#[derive(Debug, StructOpt)]
+#[derive(Debug, StructOpt, Clone)]
 #[structopt(
 	name = "vanity",
 	about = "Generate a seed that provides a vanity address"
